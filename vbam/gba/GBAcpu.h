@@ -1,11 +1,13 @@
 #ifndef GBACPU_H
 #define GBACPU_H
 
-extern int armExecute();
-extern int thumbExecute();
+struct GBASystem;
+
+extern int armExecute(GBASystem *);
+extern int thumbExecute(GBASystem *);
 
 #ifdef __GNUC__
-# define INSN_REGPARM __attribute__((regparm(1)))
+# define INSN_REGPARM __attribute__((regparm(2)))
 # define LIKELY(x) __builtin_expect(!!(x),1)
 # define UNLIKELY(x) __builtin_expect(!!(x),0)
 #else
@@ -16,133 +18,118 @@ extern int thumbExecute();
 
 #define UPDATE_REG(address, value)\
   {\
-    WRITE16LE(((u16 *)&ioMem[address]),value);\
+    WRITE16LE(((u16 *)&gba->ioMem[address]),value);\
   }\
 
 #define ARM_PREFETCH \
   {\
-    cpuPrefetch[0] = CPUReadMemoryQuick(armNextPC);\
-    cpuPrefetch[1] = CPUReadMemoryQuick(armNextPC+4);\
+    gba->cpuPrefetch[0] = CPUReadMemoryQuick(gba, gba->armNextPC);\
+    gba->cpuPrefetch[1] = CPUReadMemoryQuick(gba, gba->armNextPC+4);\
   }
 
 #define THUMB_PREFETCH \
   {\
-    cpuPrefetch[0] = CPUReadHalfWordQuick(armNextPC);\
-    cpuPrefetch[1] = CPUReadHalfWordQuick(armNextPC+2);\
+    gba->cpuPrefetch[0] = CPUReadHalfWordQuick(gba, gba->armNextPC);\
+    gba->cpuPrefetch[1] = CPUReadHalfWordQuick(gba, gba->armNextPC+2);\
   }
 
 #define ARM_PREFETCH_NEXT \
-  cpuPrefetch[1] = CPUReadMemoryQuick(armNextPC+4);
+  gba->cpuPrefetch[1] = CPUReadMemoryQuick(gba, gba->armNextPC+4);
 
 #define THUMB_PREFETCH_NEXT\
-  cpuPrefetch[1] = CPUReadHalfWordQuick(armNextPC+2);
+  gba->cpuPrefetch[1] = CPUReadHalfWordQuick(gba, gba->armNextPC+2);
 
 
-extern int SWITicks;
-extern u32 mastercode;
-extern bool busPrefetch;
-extern bool busPrefetchEnable;
-extern u32 busPrefetchCount;
-extern int cpuNextEvent;
-extern bool holdState;
-extern u32 cpuPrefetch[2];
-extern int cpuTotalTicks;
-extern u8 memoryWait[16];
-extern u8 memoryWait32[16];
-extern u8 memoryWaitSeq[16];
-extern u8 memoryWaitSeq32[16];
-extern u8 cpuBitsSet[256];
-extern u8 cpuLowestBitSet[256];
-extern void CPUSwitchMode(int mode, bool saveState, bool breakLoop);
-extern void CPUSwitchMode(int mode, bool saveState);
-extern void CPUUpdateCPSR();
-extern void CPUUpdateFlags(bool breakLoop);
-extern void CPUUpdateFlags();
-extern void CPUUndefinedException();
-extern void CPUSoftwareInterrupt();
-extern void CPUSoftwareInterrupt(int comment);
+extern void CPUSwitchMode(GBASystem *, int mode, bool saveState, bool breakLoop);
+extern void CPUSwitchMode(GBASystem *, int mode, bool saveState);
+extern void CPUUpdateCPSR(GBASystem *);
+extern void CPUUpdateFlags(GBASystem *, bool breakLoop);
+extern void CPUUpdateFlags(GBASystem *);
+extern void CPUUndefinedException(GBASystem *);
+extern void CPUSoftwareInterrupt(GBASystem *);
+extern void CPUSoftwareInterrupt(GBASystem *, int comment);
 
 
 // Waitstates when accessing data
-inline int dataTicksAccess16(u32 address) // DATA 8/16bits NON SEQ
+inline int dataTicksAccess16(GBASystem *gba, u32 address) // DATA 8/16bits NON SEQ
 {
   int addr = (address>>24)&15;
-  int value =  memoryWait[addr];
+  int value =  gba->memoryWait[addr];
 
   if ((addr>=0x08) || (addr < 0x02))
   {
-    busPrefetchCount=0;
-    busPrefetch=false;
+    gba->busPrefetchCount=0;
+    gba->busPrefetch=false;
   }
-  else if (busPrefetch)
+  else if (gba->busPrefetch)
   {
     int waitState = value;
     if (!waitState)
       waitState = 1;
-    busPrefetchCount = ((busPrefetchCount+1)<<waitState) - 1;
+    gba->busPrefetchCount = ((gba->busPrefetchCount+1)<<waitState) - 1;
   }
 
   return value;
 }
 
-inline int dataTicksAccess32(u32 address) // DATA 32bits NON SEQ
+inline int dataTicksAccess32(GBASystem *gba, u32 address) // DATA 32bits NON SEQ
 {
   int addr = (address>>24)&15;
-  int value = memoryWait32[addr];
+  int value = gba->memoryWait32[addr];
 
   if ((addr>=0x08) || (addr < 0x02))
   {
-    busPrefetchCount=0;
-    busPrefetch=false;
+    gba->busPrefetchCount=0;
+    gba->busPrefetch=false;
   }
-  else if (busPrefetch)
+  else if (gba->busPrefetch)
   {
     int waitState = value;
     if (!waitState)
       waitState = 1;
-    busPrefetchCount = ((busPrefetchCount+1)<<waitState) - 1;
+    gba->busPrefetchCount = ((gba->busPrefetchCount+1)<<waitState) - 1;
   }
 
   return value;
 }
 
-inline int dataTicksAccessSeq16(u32 address)// DATA 8/16bits SEQ
+inline int dataTicksAccessSeq16(GBASystem *gba, u32 address)// DATA 8/16bits SEQ
 {
   int addr = (address>>24)&15;
-  int value = memoryWaitSeq[addr];
+  int value = gba->memoryWaitSeq[addr];
 
   if ((addr>=0x08) || (addr < 0x02))
   {
-    busPrefetchCount=0;
-    busPrefetch=false;
+    gba->busPrefetchCount=0;
+    gba->busPrefetch=false;
   }
-  else if (busPrefetch)
+  else if (gba->busPrefetch)
   {
     int waitState = value;
     if (!waitState)
       waitState = 1;
-    busPrefetchCount = ((busPrefetchCount+1)<<waitState) - 1;
+    gba->busPrefetchCount = ((gba->busPrefetchCount+1)<<waitState) - 1;
   }
 
   return value;
 }
 
-inline int dataTicksAccessSeq32(u32 address)// DATA 32bits SEQ
+inline int dataTicksAccessSeq32(GBASystem *gba, u32 address)// DATA 32bits SEQ
 {
   int addr = (address>>24)&15;
-  int value =  memoryWaitSeq32[addr];
+  int value =  gba->memoryWaitSeq32[addr];
 
   if ((addr>=0x08) || (addr < 0x02))
   {
-    busPrefetchCount=0;
-    busPrefetch=false;
+    gba->busPrefetchCount=0;
+    gba->busPrefetch=false;
   }
-  else if (busPrefetch)
+  else if (gba->busPrefetch)
   {
     int waitState = value;
     if (!waitState)
       waitState = 1;
-    busPrefetchCount = ((busPrefetchCount+1)<<waitState) - 1;
+    gba->busPrefetchCount = ((gba->busPrefetchCount+1)<<waitState) - 1;
   }
 
   return value;
@@ -150,136 +137,120 @@ inline int dataTicksAccessSeq32(u32 address)// DATA 32bits SEQ
 
 
 // Waitstates when executing opcode
-inline int codeTicksAccess16(u32 address) // THUMB NON SEQ
+inline int codeTicksAccess16(GBASystem *gba, u32 address) // THUMB NON SEQ
 {
   int addr = (address>>24)&15;
 
   if ((addr>=0x08) && (addr<=0x0D))
   {
-    if (busPrefetchCount&0x1)
+    if (gba->busPrefetchCount&0x1)
     {
-      if (busPrefetchCount&0x2)
+      if (gba->busPrefetchCount&0x2)
       {
-        busPrefetchCount = ((busPrefetchCount&0xFF)>>2) | (busPrefetchCount&0xFFFFFF00);
+        gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>2) | (gba->busPrefetchCount&0xFFFFFF00);
         return 0;
       }
-      busPrefetchCount = ((busPrefetchCount&0xFF)>>1) | (busPrefetchCount&0xFFFFFF00);
-      return memoryWaitSeq[addr]-1;
+      gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>1) | (gba->busPrefetchCount&0xFFFFFF00);
+      return gba->memoryWaitSeq[addr]-1;
     }
     else
     {
-      busPrefetchCount=0;
-      return memoryWait[addr];
+      gba->busPrefetchCount=0;
+      return gba->memoryWait[addr];
     }
   }
   else
   {
-    busPrefetchCount = 0;
-    return memoryWait[addr];
+    gba->busPrefetchCount = 0;
+    return gba->memoryWait[addr];
   }
 }
 
-inline int codeTicksAccess32(u32 address) // ARM NON SEQ
+inline int codeTicksAccess32(GBASystem *gba, u32 address) // ARM NON SEQ
 {
   int addr = (address>>24)&15;
 
   if ((addr>=0x08) && (addr<=0x0D))
   {
-    if (busPrefetchCount&0x1)
+    if (gba->busPrefetchCount&0x1)
     {
-      if (busPrefetchCount&0x2)
+      if (gba->busPrefetchCount&0x2)
       {
-        busPrefetchCount = ((busPrefetchCount&0xFF)>>2) | (busPrefetchCount&0xFFFFFF00);
+        gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>2) | (gba->busPrefetchCount&0xFFFFFF00);
         return 0;
       }
-      busPrefetchCount = ((busPrefetchCount&0xFF)>>1) | (busPrefetchCount&0xFFFFFF00);
-      return memoryWaitSeq[addr] - 1;
+      gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>1) | (gba->busPrefetchCount&0xFFFFFF00);
+      return gba->memoryWaitSeq[addr] - 1;
     }
     else
     {
-      busPrefetchCount = 0;
-      return memoryWait32[addr];
+      gba->busPrefetchCount = 0;
+      return gba->memoryWait32[addr];
     }
   }
   else
   {
-    busPrefetchCount = 0;
-    return memoryWait32[addr];
+    gba->busPrefetchCount = 0;
+    return gba->memoryWait32[addr];
   }
 }
 
-inline int codeTicksAccessSeq16(u32 address) // THUMB SEQ
+inline int codeTicksAccessSeq16(GBASystem *gba, u32 address) // THUMB SEQ
 {
   int addr = (address>>24)&15;
 
   if ((addr>=0x08) && (addr<=0x0D))
   {
-    if (busPrefetchCount&0x1)
+    if (gba->busPrefetchCount&0x1)
     {
-      busPrefetchCount = ((busPrefetchCount&0xFF)>>1) | (busPrefetchCount&0xFFFFFF00);
+      gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>1) | (gba->busPrefetchCount&0xFFFFFF00);
       return 0;
     }
     else
-    if (busPrefetchCount>0xFF)
+    if (gba->busPrefetchCount>0xFF)
     {
-      busPrefetchCount=0;
-      return memoryWait[addr];
+      gba->busPrefetchCount=0;
+      return gba->memoryWait[addr];
     }
     else
-      return memoryWaitSeq[addr];
+      return gba->memoryWaitSeq[addr];
   }
   else
   {
-    busPrefetchCount = 0;
-    return memoryWaitSeq[addr];
+    gba->busPrefetchCount = 0;
+    return gba->memoryWaitSeq[addr];
   }
 }
 
-inline int codeTicksAccessSeq32(u32 address) // ARM SEQ
+inline int codeTicksAccessSeq32(GBASystem *gba, u32 address) // ARM SEQ
 {
   int addr = (address>>24)&15;
 
   if ((addr>=0x08) && (addr<=0x0D))
   {
-    if (busPrefetchCount&0x1)
+    if (gba->busPrefetchCount&0x1)
     {
-      if (busPrefetchCount&0x2)
+      if (gba->busPrefetchCount&0x2)
       {
-        busPrefetchCount = ((busPrefetchCount&0xFF)>>2) | (busPrefetchCount&0xFFFFFF00);
+        gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>2) | (gba->busPrefetchCount&0xFFFFFF00);
         return 0;
       }
-      busPrefetchCount = ((busPrefetchCount&0xFF)>>1) | (busPrefetchCount&0xFFFFFF00);
-      return memoryWaitSeq[addr];
+      gba->busPrefetchCount = ((gba->busPrefetchCount&0xFF)>>1) | (gba->busPrefetchCount&0xFFFFFF00);
+      return gba->memoryWaitSeq[addr];
     }
     else
-    if (busPrefetchCount>0xFF)
+    if (gba->busPrefetchCount>0xFF)
     {
-      busPrefetchCount=0;
-      return memoryWait32[addr];
+      gba->busPrefetchCount=0;
+      return gba->memoryWait32[addr];
     }
     else
-      return memoryWaitSeq32[addr];
+      return gba->memoryWaitSeq32[addr];
   }
   else
   {
-    return memoryWaitSeq32[addr];
+    return gba->memoryWaitSeq32[addr];
   }
 }
-
-
-#ifdef VIOGSF_REMOVED
-// Emulates the Cheat System (m) code
-inline void cpuMasterCodeCheck()
-{
-  if((mastercode) && (mastercode == armNextPC))
-  {
-    u32 joy = 0;
-    if(systemReadJoypads())
-      joy = systemReadJoypad(-1);
-    u32 ext = (joy >> 10);
-    cpuTotalTicks += cheatsCheckKeys(P1^0x3FF, ext);
-  }
-}
-#endif
 
 #endif // GBACPU_H

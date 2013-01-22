@@ -14,6 +14,8 @@
 		typedef unsigned blip_ulong;
 	#endif
 
+namespace GBA {
+
 // Time unit at source clock rate
 typedef blip_long blip_time_t;
 
@@ -552,5 +554,7 @@ inline blip_ulong Blip_Buffer::unsettled() const
 
 int const blip_max_length = 0;
 int const blip_default_length = 250; // 1/4 second
+
+}
 
 #endif

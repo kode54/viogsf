@@ -15,6 +15,8 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
 #include "blargg_source.h"
 
+namespace GBA {
+
 bool const cgb_02 = false; // enables bug in early CGB units that causes problems in some games
 bool const cgb_05 = false; // enables CGB-05 zombie behavior
 
@@ -662,4 +664,6 @@ void Gb_Wave::run( blip_time_t time, blip_time_t end_time )
 		this->phase = ph ^ swap_banks; // undo swapped banks
 	}
 	delay = time - end_time;
+}
+
 }

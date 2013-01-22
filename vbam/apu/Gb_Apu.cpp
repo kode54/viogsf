@@ -15,6 +15,8 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
 #include "blargg_source.h"
 
+namespace GBA {
+
 unsigned const vol_reg    = 0xFF24;
 unsigned const stereo_reg = 0xFF25;
 unsigned const status_reg = 0xFF26;
@@ -393,9 +395,6 @@ int Gb_Apu::read_register( blip_time_t time, unsigned addr )
 	return data;
 }
 
-#ifdef VIOGSF_REMOVED
-#else
-
 int Gb_Apu::read_status()
 {
 	int data = 0;
@@ -406,4 +405,4 @@ int Gb_Apu::read_status()
 	return data;
 }
 
-#endif
+}

@@ -8,6 +8,8 @@
 
 // See Simple_Effects_Buffer (below) for a simpler interface
 
+namespace GBA {
+
 class Effects_Buffer : public Multi_Buffer {
 public:
 	// To reduce memory usage, fewer buffers can be used (with a best-fit
@@ -139,5 +141,7 @@ private:
 	config_t config_;
 	void chan_config(); // hide
 };
+
+}
 
 #endif

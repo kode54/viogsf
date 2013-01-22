@@ -9,31 +9,9 @@
 #include "GBAinline.h"
 #include "Globals.h"
 
-#ifdef VIOGSF_REMOVED
-
-#include "EEprom.h"
-#include "Flash.h"
-#include "Sound.h"
-#include "Sram.h"
-#include "bios.h"
-#include "Cheats.h"
-#include "../NLS.h"
-#include "elf.h"
-#include "../Util.h"
-#include "../System.h"
-#include "agbprint.h"
-
-#else
-
 #include "Sound.h"
 #include "bios.h"
 #include "../common/Types.h"
-
-#endif
-
-#ifdef PROFILING
-#include "prof/prof.h"
-#endif
 
 #ifdef _MSC_VER
  // Disable "empty statement" warnings
@@ -45,78 +23,14 @@
 
 ///////////////////////////////////////////////////////////////////////////
 
-static int clockTicks;
-
-static INSN_REGPARM void armUnknownInsn(u32 opcode)
+static INSN_REGPARM void armUnknownInsn(GBASystem *gba, u32 opcode)
 {
-#ifdef GBA_LOGGING
-    if (systemVerbose & VERBOSE_UNDEFINED) {
-        log("Undefined ARM instruction %08x at %08x\n", opcode,
-            armNextPC-4);
-    }
-#endif
-    CPUUndefinedException();
+    CPUUndefinedException(gba);
 }
-
-#ifdef BKPT_SUPPORT
-static INSN_REGPARM void armBreakpoint(u32 opcode)
-{
-    reg[15].I -= 4;
-    armNextPC -= 4;
-    dbgSignal(5, (opcode & 0x0f) | ((opcode>>4) & 0xfff0));
-    clockTicks = -1;
-}
-#endif
-
-
-// Subroutine to count instructions (for debugging/optimizing)
-//#define INSN_COUNTER  // comment out if you don't want it
-#ifdef INSN_COUNTER
-static void count(u32 opcode, int cond_res)
-{
-    static int insncount = 0;    // number of insns seen
-    static int executed = 0;     // number of insns executed
-    static int mergewith[4096];  // map instructions to routines
-    static int count[4096];      // count of each 12-bit code
-    int index = ((opcode>>16)&0xFF0) | ((opcode>>4)&0x0F);
-    static FILE *outfile = NULL;
-
-    if (!insncount) {
-        for (int i = 0; i < 4096; i++) {
-            for (int j = 0; j < i; j++) {
-                if (armInsnTable[i] == armInsnTable[j])
-                    break;
-            }
-            mergewith[i] = j;
-        }
-        outfile = fopen("VBA-armcount.txt", "w");
-    }
-    if (cond_res) {
-        count[mergewith[index]]++;
-        executed++;
-    }
-    insncount++;
-    if (outfile && insncount%1000000 == 0) {
-        fprintf(outfile, "Total instructions: %d\n", insncount);
-        fprintf(outfile, "Instructions executed: %d\n", executed);
-        for (int i = 0; i < 4096; i++) {
-            if (count[i])
-                fprintf(outfile, "arm%03X: %d\n", i, count[i]);
-        }
-    }
-}
-#endif
 
 // Common macros //////////////////////////////////////////////////////////
 
-#ifdef BKPT_SUPPORT
-#define CONSOLE_OUTPUT(a,b) do { \
-    if ((opcode == 0xe0000000) && (reg[0].I == 0xC0DED00D)) {   \
-        dbgOutput((a), (b));                                    \
-} while (0)
-#else
 #define CONSOLE_OUTPUT(a,b)  /* nothing */
-#endif
 
 #define NEG(i) ((i) >> 31)
 #define POS(i) ((~(i)) >> 31)
@@ -146,608 +60,33 @@ static void count(u32 opcode, int cond_res)
 //    RRX_OFFSET: Used to rotate (RRX) the `offset' parameter for LDR and
 //                STR instructions.
 
-#ifndef C_CORE
-
-#if 0  // definitions have changed
-//#ifdef __POWERPC__
-            #define OP_SUBS \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("subco. %0, %2, %3\n"              \
-                            "mcrxr cr1\n"                       \
-                            "mfcr %1\n"                         \
-                            : "=r" (Result),                    \
-                              "=r" (Flags)                      \
-                            : "r" (reg[base].I),                \
-                              "r" (value)                       \
-                            );                                  \
-                reg[dest].I = Result;                           \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_RSBS \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("subfco. %0, %2, %3\n"             \
-                            "mcrxr cr1\n"                       \
-                            "mfcr %1\n"                         \
-                            : "=r" (Result),                    \
-                              "=r" (Flags)                      \
-                            : "r" (reg[base].I),                \
-                              "r" (value)                       \
-                            );                                  \
-                reg[dest].I = Result;                           \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_ADDS \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("addco. %0, %2, %3\n"              \
-                            "mcrxr cr1\n"                       \
-                            "mfcr %1\n"                         \
-                            : "=r" (Result),                    \
-                              "=r" (Flags)                      \
-                            : "r" (reg[base].I),                \
-                              "r" (value)                       \
-                            );                                  \
-                reg[dest].I = Result;                           \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_ADCS \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("mtspr xer, %4\n"                  \
-                             "addeo. %0, %2, %3\n"              \
-                             "mcrxr cr1\n"                      \
-                             "mfcr      %1\n"                   \
-                             : "=r" (Result),                   \
-                               "=r" (Flags)                     \
-                             : "r" (reg[base].I),               \
-                               "r" (value),                     \
-                               "r" (C_FLAG << 29)               \
-                             );                                 \
-                reg[dest].I = Result;                           \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_SBCS \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("mtspr xer, %4\n"                  \
-                             "subfeo. %0, %3, %2\n"             \
-                             "mcrxr cr1\n"                      \
-                             "mfcr      %1\n"                   \
-                             : "=r" (Result),                   \
-                               "=r" (Flags)                     \
-                             : "r" (reg[base].I),               \
-                               "r" (value),                     \
-                               "r" (C_FLAG << 29)               \
-                             );                                 \
-                reg[dest].I = Result;                           \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_RSCS \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("mtspr xer, %4\n"                  \
-                             "subfeo. %0, %2, %3\n"             \
-                             "mcrxr cr1\n"                      \
-                             "mfcr      %1\n"                   \
-                             : "=r" (Result),                   \
-                               "=r" (Flags)                     \
-                             : "r" (reg[base].I),               \
-                               "r" (value),                     \
-                               "r" (C_FLAG << 29)               \
-                             );                                 \
-                reg[dest].I = Result;                           \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_CMP \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("subco. %0, %2, %3\n"              \
-                            "mcrxr cr1\n"                       \
-                            "mfcr %1\n"                         \
-                            : "=r" (Result),                    \
-                              "=r" (Flags)                      \
-                            : "r" (reg[base].I),                \
-                              "r" (value)                       \
-                            );                                  \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-            #define OP_CMN \
-            {\
-                register int Flags;                             \
-                register int Result;                            \
-                asm volatile("addco. %0, %2, %3\n"              \
-                            "mcrxr cr1\n"                       \
-                            "mfcr %1\n"                         \
-                            : "=r" (Result),                    \
-                              "=r" (Flags)                      \
-                            : "r" (reg[base].I),                \
-                              "r" (value)                       \
-                            );                                  \
-                Z_FLAG = (Flags >> 29) & 1;                     \
-                N_FLAG = (Flags >> 31) & 1;                     \
-                C_FLAG = (Flags >> 25) & 1;                     \
-                V_FLAG = (Flags >> 26) & 1;                     \
-            }
-
-#else  // !__POWERPC__
-
-// Macros to emit instructions in the format used by the particular compiler.
-// We use GNU assembler syntax: "op src, dest" rather than "op dest, src"
-
-#ifdef __GNUC__
- #define ALU_HEADER           asm("mov %%ecx, %%edi; "
- #define ALU_TRAILER          : "=D" (opcode) : "c" (opcode) : "eax", "ebx", "edx", "esi")
- #define EMIT0(op)            #op"; "
- #define EMIT1(op,arg)        #op" "arg"; "
- #define EMIT2(op,src,dest)   #op" "src", "dest"; "
- #define CONST(val)           "$"#val
- #define ASMVAR(cvar)         ASMVAR2 (__USER_LABEL_PREFIX__, cvar)
- #define ASMVAR2(prefix,cvar) STRING (prefix) cvar
- #define STRING(x)            #x
- #define VAR(var)             ASMVAR(#var)
- #define VARL(var)            ASMVAR(#var)
- #define REGREF1(index)       ASMVAR("reg("index")")
- #define REGREF2(index,scale) ASMVAR("reg(,"index","#scale")")
- #define LABEL(n)             #n": "
- #define LABELREF(n,dir)      #n#dir
- #define al "%%al"
- #define ah "%%ah"
- #define eax "%%eax"
- #define bl "%%bl"
- #define bh "%%bh"
- #define ebx "%%ebx"
- #define cl "%%cl"
- #define ch "%%ch"
- #define ecx "%%ecx"
- #define dl "%%dl"
- #define dh "%%dh"
- #define edx "%%edx"
- #define esp "%%esp"
- #define ebp "%%ebp"
- #define esi "%%esi"
- #define edi "%%edi"
- #define movzx movzb
-#else
- #define ALU_HEADER           __asm { __asm mov ecx, opcode
- #define ALU_TRAILER          }
- #define EMIT0(op)            __asm op
- #define EMIT1(op,arg)        __asm op arg
- #define EMIT2(op,src,dest)   __asm op dest, src
- #define CONST(val)           val
- #define VAR(var)             var
- #define VARL(var)            dword ptr var
- #define REGREF1(index)       reg[index]
- #define REGREF2(index,scale) reg[index*scale]
- #define LABEL(n)             __asm l##n:
- #define LABELREF(n,dir)      l##n
-#endif
-
-//X//#ifndef _MSC_VER
-// ALU op register usage:
-//    EAX -> 2nd operand value, result (RSB/RSC)
-//    EBX -> C_OUT (carry flag from shift/rotate)
-//    ECX -> opcode (input), shift/rotate count
-//    EDX -> Rn (base) value, result (all except RSB/RSC)
-//    ESI -> Rd (destination) index * 4
-
-// Helper macros for loading value / shift count
-#define VALUE_LOAD_IMM \
-        EMIT2(and, CONST(0x0F), eax)            \
-        EMIT2(mov, REGREF2(eax,4), eax)         \
-        EMIT2(shr, CONST(7), ecx)               \
-        EMIT2(and, CONST(0x1F), ecx)
-#define VALUE_LOAD_REG \
-        EMIT2(and, CONST(0x0F), eax)            \
-        EMIT2(mov, REGREF2(eax,4), eax)         \
-        EMIT2(movzx, ch, ecx)                   \
-        EMIT2(and, CONST(0x0F), ecx)            \
-        EMIT2(mov, REGREF2(ecx,4), ecx)
-
-// Helper macros for setting flags
-#define SETCOND_LOGICAL \
-    EMIT1(sets, VAR(N_FLAG))            \
-    EMIT1(setz, VAR(Z_FLAG))            \
-    EMIT2(mov, bl, VAR(C_FLAG))
-#define SETCOND_ADD \
-    EMIT1(sets, VAR(N_FLAG))            \
-    EMIT1(setz, VAR(Z_FLAG))            \
-    EMIT1(seto, VAR(V_FLAG))            \
-    EMIT1(setc, VAR(C_FLAG))
-#define SETCOND_SUB \
-    EMIT1(sets, VAR(N_FLAG))            \
-    EMIT1(setz, VAR(Z_FLAG))            \
-    EMIT1(seto, VAR(V_FLAG))            \
-    EMIT1(setnc, VAR(C_FLAG))
-
-// ALU initialization
-#define ALU_INIT(LOAD_C_FLAG) \
-    ALU_HEADER                          \
-    LOAD_C_FLAG                         \
-    EMIT2(mov, ecx, edx)                \
-    EMIT2(shr, CONST(14), edx)          \
-    EMIT2(mov, ecx, eax)                \
-    EMIT2(mov, ecx, esi)                \
-    EMIT2(shr, CONST(10), esi)          \
-    EMIT2(and, CONST(0x3C), edx)        \
-    EMIT2(mov, REGREF1(edx), edx)       \
-    EMIT2(and, CONST(0x3C), esi)
-
-#define LOAD_C_FLAG_YES EMIT2(mov, VAR(C_FLAG), bl)
-#define LOAD_C_FLAG_NO  /*nothing*/
-#define ALU_INIT_C ALU_INIT(LOAD_C_FLAG_YES)
-#define ALU_INIT_NC ALU_INIT(LOAD_C_FLAG_NO)
-
-// Macros to load the value operand for an ALU op; these all set N/Z
-// according to the value
-
-// OP Rd,Rb,Rm LSL #
-#define VALUE_LSL_IMM_C \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jnz, LABELREF(1,f))           \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(shl, cl, eax)                 \
-    EMIT1(setc, bl)                     \
-    LABEL(0)
-#define VALUE_LSL_IMM_NC \
-    VALUE_LOAD_IMM                      \
-    EMIT2(shl, cl, eax)
-
-// OP Rd,Rb,Rm LSL Rs
-#define VALUE_LSL_REG_C \
-    VALUE_LOAD_REG                      \
-    EMIT2(test, cl, cl)                 \
-    EMIT1(jz, LABELREF(0,f))            \
-    EMIT2(cmp, CONST(0x20), cl)         \
-    EMIT1(je, LABELREF(1,f))            \
-    EMIT1(ja, LABELREF(2,f))            \
-    EMIT2(shl, cl, eax)                 \
-    EMIT1(setc, bl)                     \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(test, CONST(1), al)           \
-    EMIT1(setnz, bl)                    \
-    EMIT2(xor, eax, eax)                \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(2)                            \
-    EMIT2(xor, ebx, ebx)                \
-    EMIT2(xor, eax, eax)                \
-    LABEL(0)
-#define VALUE_LSL_REG_NC \
-    VALUE_LOAD_REG                      \
-    EMIT2(cmp, CONST(0x20), cl)         \
-    EMIT1(jae, LABELREF(1,f))           \
-    EMIT2(shl, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(xor, eax, eax)                \
-    LABEL(0)
-
-// OP Rd,Rb,Rm LSR #
-#define VALUE_LSR_IMM_C \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jz, LABELREF(1,f))            \
-    EMIT2(shr, cl, eax)                 \
-    EMIT1(setc, bl)                     \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(test, eax, eax)               \
-    EMIT1(sets, bl)                     \
-    EMIT2(xor, eax, eax)                \
-    LABEL(0)
-#define VALUE_LSR_IMM_NC \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jz, LABELREF(1,f))            \
-    EMIT2(shr, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(xor, eax, eax)                \
-    LABEL(0)
-
-// OP Rd,Rb,Rm LSR Rs
-#define VALUE_LSR_REG_C \
-    VALUE_LOAD_REG                      \
-    EMIT2(test, cl, cl)                 \
-    EMIT1(jz, LABELREF(0,f))            \
-    EMIT2(cmp, CONST(0x20), cl)         \
-    EMIT1(je, LABELREF(1,f))            \
-    EMIT1(ja, LABELREF(2,f))            \
-    EMIT2(shr, cl, eax)                 \
-    EMIT1(setc, bl)                     \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(test, eax, eax)               \
-    EMIT1(sets, bl)                     \
-    EMIT2(xor, eax, eax)                \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(2)                            \
-    EMIT2(xor, ebx, ebx)                \
-    EMIT2(xor, eax, eax)                \
-    LABEL(0)
-#define VALUE_LSR_REG_NC \
-    VALUE_LOAD_REG                      \
-    EMIT2(cmp, CONST(0x20), cl)         \
-    EMIT1(jae, LABELREF(1,f))           \
-    EMIT2(shr, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(xor, eax, eax)                \
-    LABEL(0)
-
-// OP Rd,Rb,Rm ASR #
-#define VALUE_ASR_IMM_C \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jz, LABELREF(1,f))            \
-    EMIT2(sar, cl, eax)                 \
-    EMIT1(setc, bl)                     \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(sar, CONST(31), eax)          \
-    EMIT1(sets, bl)                     \
-    LABEL(0)
-#define VALUE_ASR_IMM_NC \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jz, LABELREF(1,f))            \
-    EMIT2(sar, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(sar, CONST(31), eax)          \
-    LABEL(0)
-
-// OP Rd,Rb,Rm ASR Rs
-#define VALUE_ASR_REG_C \
-    VALUE_LOAD_REG                      \
-    EMIT2(test, cl, cl)                 \
-    EMIT1(jz, LABELREF(0,f))            \
-    EMIT2(cmp, CONST(0x20), cl)         \
-    EMIT1(jae, LABELREF(1,f))           \
-    EMIT2(sar, cl, eax)                 \
-    EMIT1(setc, bl)                     \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(sar, CONST(31), eax)          \
-    EMIT1(sets, bl)                     \
-    LABEL(0)
-#define VALUE_ASR_REG_NC \
-    VALUE_LOAD_REG                      \
-    EMIT2(cmp, CONST(0x20), cl)         \
-    EMIT1(jae, LABELREF(1,f))           \
-    EMIT2(sar, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(sar, CONST(31), eax)          \
-    LABEL(0)
-
-// OP Rd,Rb,Rm ROR #
-#define VALUE_ROR_IMM_C \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jz, LABELREF(1,f))            \
-    EMIT2(ror, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(bt, CONST(0), ebx)            \
-    EMIT2(rcr, CONST(1), eax)           \
-    LABEL(0)                            \
-    EMIT1(setc, bl)
-#define VALUE_ROR_IMM_NC \
-    VALUE_LOAD_IMM                      \
-    EMIT1(jz, LABELREF(1,f))            \
-    EMIT2(ror, cl, eax)                 \
-    EMIT1(jmp, LABELREF(0,f))           \
-    LABEL(1)                            \
-    EMIT2(bt, CONST(0), VARL(C_FLAG))   \
-    EMIT2(rcr, CONST(1), eax)           \
-    LABEL(0)
-
-// OP Rd,Rb,Rm ROR Rs
-#define VALUE_ROR_REG_C \
-    VALUE_LOAD_REG                      \
-    EMIT2(bt, CONST(0), ebx)            \
-    EMIT2(ror, cl, eax)                 \
-    EMIT1(setc, bl)
-#define VALUE_ROR_REG_NC \
-    VALUE_LOAD_REG                      \
-    EMIT2(ror, cl, eax)
-
-// OP Rd,Rb,# ROR #
-#define VALUE_IMM_C \
-    EMIT2(movzx, ch, ecx)               \
-    EMIT2(add, ecx, ecx)                \
-    EMIT2(movzx, al, eax)               \
-    EMIT2(bt, CONST(0), ebx)            \
-    EMIT2(ror, cl, eax)                 \
-    EMIT1(setc, bl)
-#define VALUE_IMM_NC \
-    EMIT2(movzx, ch, ecx)               \
-    EMIT2(add, ecx, ecx)                \
-    EMIT2(movzx, al, eax)               \
-    EMIT2(ror, cl, eax)
-
-// Macros to perform ALU ops
-
-// Set condition codes iff the destination register is not R15 (PC)
-#define CHECK_PC(OP, SETCOND) \
-    EMIT2(cmp, CONST(0x3C), esi)        \
-    EMIT1(je, LABELREF(8,f))            \
-    OP SETCOND                          \
-    EMIT1(jmp, LABELREF(9,f))           \
-    LABEL(8)                            \
-    OP                                  \
-    LABEL(9)
-
-#define OP_AND \
-    EMIT2(and, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_ANDS   CHECK_PC(OP_AND, SETCOND_LOGICAL)
-#define OP_EOR \
-    EMIT2(xor, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_EORS   CHECK_PC(OP_EOR, SETCOND_LOGICAL)
-#define OP_SUB \
-    EMIT2(sub, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_SUBS   CHECK_PC(OP_SUB, SETCOND_SUB)
-#define OP_RSB \
-    EMIT2(sub, edx, eax)                \
-    EMIT2(mov, eax, REGREF1(esi))
-#define OP_RSBS   CHECK_PC(OP_RSB, SETCOND_SUB)
-#define OP_ADD \
-    EMIT2(add, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_ADDS   CHECK_PC(OP_ADD, SETCOND_ADD)
-#define OP_ADC \
-    EMIT2(bt, CONST(0), VARL(C_FLAG))   \
-    EMIT2(adc, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_ADCS   CHECK_PC(OP_ADC, SETCOND_ADD)
-#define OP_SBC \
-    EMIT2(bt, CONST(0), VARL(C_FLAG))   \
-    EMIT0(cmc)                          \
-    EMIT2(sbb, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_SBCS   CHECK_PC(OP_SBC, SETCOND_SUB)
-#define OP_RSC \
-    EMIT2(bt, CONST(0), VARL(C_FLAG))   \
-    EMIT0(cmc)                          \
-    EMIT2(sbb, edx, eax)                \
-    EMIT2(mov, eax, REGREF1(esi))
-#define OP_RSCS   CHECK_PC(OP_RSC, SETCOND_SUB)
-#define OP_TST \
-    EMIT2(and, eax, edx)                \
-    SETCOND_LOGICAL
-#define OP_TEQ \
-    EMIT2(xor, eax, edx)                \
-    SETCOND_LOGICAL
-#define OP_CMP \
-    EMIT2(sub, eax, edx)                \
-    SETCOND_SUB
-#define OP_CMN \
-    EMIT2(add, eax, edx)                \
-    SETCOND_ADD
-#define OP_ORR \
-    EMIT2(or, eax, edx)                 \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_ORRS   CHECK_PC(OP_ORR, SETCOND_LOGICAL)
-#define OP_MOV \
-    EMIT2(mov, eax, REGREF1(esi))
-#define OP_MOVS   CHECK_PC(EMIT2(test,eax,eax) EMIT2(mov,eax,REGREF1(esi)), SETCOND_LOGICAL)
-#define OP_BIC \
-    EMIT1(not, eax)                     \
-    EMIT2(and, eax, edx)                \
-    EMIT2(mov, edx, REGREF1(esi))
-#define OP_BICS   CHECK_PC(OP_BIC, SETCOND_LOGICAL)
-#define OP_MVN \
-    EMIT1(not, eax)                     \
-    EMIT2(mov, eax, REGREF1(esi))
-#define OP_MVNS   CHECK_PC(OP_MVN, SETCOND_LOGICAL)
-
-// ALU cleanup macro
-#define ALU_FINISH  ALU_TRAILER
-
-// End of ALU macros
-//X//#endif //_MSC_VER
-
-#ifdef __GNUC__
-
-#define ROR_IMM_MSR \
-    asm ("ror %%cl, %%eax;"             \
-         : "=a" (value)                 \
-         : "a" (opcode & 0xFF), "c" (shift));
-
-#define ROR_OFFSET \
-    asm("ror %%cl, %0"                  \
-        : "=r" (offset)                 \
-        : "0" (offset), "c" (shift));
-
-#define RRX_OFFSET \
-    asm(EMIT2(btl,CONST(0),VAR(C_FLAG)) \
-        "rcr $1, %0"                    \
-        : "=r" (offset)                 \
-        : "0" (offset));
-
-#else  // !__GNUC__, i.e. Visual C++
-
-#define ROR_IMM_MSR \
-    __asm {                             \
-        __asm mov ecx, shift            \
-        __asm ror value, cl             \
-     }
-
-
-#define ROR_OFFSET \
-    __asm {                             \
-        __asm mov ecx, shift            \
-        __asm ror offset, cl            \
-    }
-
-#define RRX_OFFSET \
-    __asm {                             \
-        __asm bt dword ptr C_FLAG, 0    \
-        __asm rcr offset, 1             \
-    }
-
-#endif  // !__GNUC__
-
-#endif  // !__POWERPC__
-#endif  // !C_CORE
-
 // C core
 
 #define C_SETCOND_LOGICAL \
-    N_FLAG = ((s32)res < 0) ? true : false;             \
-    Z_FLAG = (res == 0) ? true : false;                 \
-    C_FLAG = C_OUT;
+    gba->N_FLAG = ((s32)res < 0) ? true : false;             \
+    gba->Z_FLAG = (res == 0) ? true : false;                 \
+    gba->C_FLAG = C_OUT;
 #define C_SETCOND_ADD \
-    N_FLAG = ((s32)res < 0) ? true : false;             \
-    Z_FLAG = (res == 0) ? true : false;                 \
-    V_FLAG = ((NEG(lhs) & NEG(rhs) & POS(res)) |        \
+    gba->N_FLAG = ((s32)res < 0) ? true : false;             \
+    gba->Z_FLAG = (res == 0) ? true : false;                 \
+    gba->V_FLAG = ((NEG(lhs) & NEG(rhs) & POS(res)) |        \
               (POS(lhs) & POS(rhs) & NEG(res))) ? true : false;\
-    C_FLAG = ((NEG(lhs) & NEG(rhs)) |                   \
+    gba->C_FLAG = ((NEG(lhs) & NEG(rhs)) |                   \
               (NEG(lhs) & POS(res)) |                   \
               (NEG(rhs) & POS(res))) ? true : false;
 #define C_SETCOND_SUB \
-    N_FLAG = ((s32)res < 0) ? true : false;             \
-    Z_FLAG = (res == 0) ? true : false;                 \
-    V_FLAG = ((NEG(lhs) & POS(rhs) & POS(res)) |        \
+    gba->N_FLAG = ((s32)res < 0) ? true : false;             \
+    gba->Z_FLAG = (res == 0) ? true : false;                 \
+    gba->V_FLAG = ((NEG(lhs) & POS(rhs) & POS(res)) |        \
               (POS(lhs) & NEG(rhs) & NEG(res))) ? true : false;\
-    C_FLAG = ((NEG(lhs) & POS(rhs)) |                   \
+    gba->C_FLAG = ((NEG(lhs) & POS(rhs)) |                   \
               (NEG(lhs) & POS(res)) |                   \
               (POS(rhs) & POS(res))) ? true : false;
 
 #ifndef ALU_INIT_C
  #define ALU_INIT_C \
     int dest = (opcode>>12) & 15;                       \
-    bool C_OUT = C_FLAG;                                \
+    bool C_OUT = gba->C_FLAG;                                \
     u32 value;
 #endif
 // OP Rd,Rb,Rm LSL #
@@ -755,9 +94,9 @@ static void count(u32 opcode, int cond_res)
  #define VALUE_LSL_IMM_C \
     unsigned int shift = (opcode >> 7) & 0x1F;          \
     if (LIKELY(!shift)) {  /* LSL #0 most common? */    \
-        value = reg[opcode & 0x0F].I;                   \
+        value = gba->reg[opcode & 0x0F].I;                   \
     } else {                                            \
-        u32 v = reg[opcode & 0x0F].I;                   \
+        u32 v = gba->reg[opcode & 0x0F].I;                   \
         C_OUT = (v >> (32 - shift)) & 1 ? true : false; \
         value = v << shift;                             \
     }
@@ -765,13 +104,13 @@ static void count(u32 opcode, int cond_res)
 // OP Rd,Rb,Rm LSL Rs
 #ifndef VALUE_LSL_REG_C
  #define VALUE_LSL_REG_C \
-    unsigned int shift = reg[(opcode >> 8)&15].B.B0;    \
+    unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     if (LIKELY(shift)) {                                \
         if (shift == 32) {                              \
             value = 0;                                  \
-            C_OUT = (reg[opcode & 0x0F].I & 1 ? true : false);\
+            C_OUT = (gba->reg[opcode & 0x0F].I & 1 ? true : false);\
         } else if (LIKELY(shift < 32)) {                \
-            u32 v = reg[opcode & 0x0F].I;               \
+            u32 v = gba->reg[opcode & 0x0F].I;               \
             C_OUT = (v >> (32 - shift)) & 1 ? true : false;\
             value = v << shift;                         \
         } else {                                        \
@@ -779,7 +118,7 @@ static void count(u32 opcode, int cond_res)
             C_OUT = false;                              \
         }                                               \
     } else {                                            \
-        value = reg[opcode & 0x0F].I;                   \
+        value = gba->reg[opcode & 0x0F].I;                   \
     }
 #endif
 // OP Rd,Rb,Rm LSR #
@@ -787,24 +126,24 @@ static void count(u32 opcode, int cond_res)
  #define VALUE_LSR_IMM_C \
     unsigned int shift = (opcode >> 7) & 0x1F;          \
     if (LIKELY(shift)) {                                \
-        u32 v = reg[opcode & 0x0F].I;                   \
+        u32 v = gba->reg[opcode & 0x0F].I;                   \
         C_OUT = (v >> (shift - 1)) & 1 ? true : false;  \
         value = v >> shift;                             \
     } else {                                            \
         value = 0;                                      \
-        C_OUT = (reg[opcode & 0x0F].I & 0x80000000) ? true : false;\
+        C_OUT = (gba->reg[opcode & 0x0F].I & 0x80000000) ? true : false;\
     }
 #endif
 // OP Rd,Rb,Rm LSR Rs
 #ifndef VALUE_LSR_REG_C
  #define VALUE_LSR_REG_C \
-    unsigned int shift = reg[(opcode >> 8)&15].B.B0;    \
+    unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     if (LIKELY(shift)) {                                \
         if (shift == 32) {                              \
             value = 0;                                  \
-            C_OUT = (reg[opcode & 0x0F].I & 0x80000000 ? true : false);\
+            C_OUT = (gba->reg[opcode & 0x0F].I & 0x80000000 ? true : false);\
         } else if (LIKELY(shift < 32)) {                \
-            u32 v = reg[opcode & 0x0F].I;               \
+            u32 v = gba->reg[opcode & 0x0F].I;               \
             C_OUT = (v >> (shift - 1)) & 1 ? true : false;\
             value = v >> shift;                         \
         } else {                                        \
@@ -812,7 +151,7 @@ static void count(u32 opcode, int cond_res)
             C_OUT = false;                              \
         }                                               \
     } else {                                            \
-        value = reg[opcode & 0x0F].I;                   \
+        value = gba->reg[opcode & 0x0F].I;                   \
     }
 #endif
 // OP Rd,Rb,Rm ASR #
@@ -821,11 +160,11 @@ static void count(u32 opcode, int cond_res)
     unsigned int shift = (opcode >> 7) & 0x1F;          \
     if (LIKELY(shift)) {                                \
         /* VC++ BUG: u32 v; (s32)v>>n is optimized to shr! */ \
-        s32 v = reg[opcode & 0x0F].I;                   \
+        s32 v = gba->reg[opcode & 0x0F].I;                   \
         C_OUT = (v >> (int)(shift - 1)) & 1 ? true : false;\
         value = v >> (int)shift;                        \
     } else {                                            \
-        if (reg[opcode & 0x0F].I & 0x80000000) {        \
+        if (gba->reg[opcode & 0x0F].I & 0x80000000) {        \
             value = 0xFFFFFFFF;                         \
             C_OUT = true;                               \
         } else {                                        \
@@ -837,17 +176,17 @@ static void count(u32 opcode, int cond_res)
 // OP Rd,Rb,Rm ASR Rs
 #ifndef VALUE_ASR_REG_C
  #define VALUE_ASR_REG_C \
-    unsigned int shift = reg[(opcode >> 8)&15].B.B0;    \
+    unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     if (LIKELY(shift < 32)) {                           \
         if (LIKELY(shift)) {                            \
-            s32 v = reg[opcode & 0x0F].I;               \
+            s32 v = gba->reg[opcode & 0x0F].I;               \
             C_OUT = (v >> (int)(shift - 1)) & 1 ? true : false;\
             value = v >> (int)shift;                    \
         } else {                                        \
-            value = reg[opcode & 0x0F].I;               \
+            value = gba->reg[opcode & 0x0F].I;               \
         }                                               \
     } else {                                            \
-        if (reg[opcode & 0x0F].I & 0x80000000) {        \
+        if (gba->reg[opcode & 0x0F].I & 0x80000000) {        \
             value = 0xFFFFFFFF;                         \
             C_OUT = true;                               \
         } else {                                        \
@@ -861,28 +200,28 @@ static void count(u32 opcode, int cond_res)
  #define VALUE_ROR_IMM_C \
     unsigned int shift = (opcode >> 7) & 0x1F;          \
     if (LIKELY(shift)) {                                \
-        u32 v = reg[opcode & 0x0F].I;                   \
+        u32 v = gba->reg[opcode & 0x0F].I;                   \
         C_OUT = (v >> (shift - 1)) & 1 ? true : false;  \
         value = ((v << (32 - shift)) |                  \
                  (v >> shift));                         \
     } else {                                            \
-        u32 v = reg[opcode & 0x0F].I;                   \
+        u32 v = gba->reg[opcode & 0x0F].I;                   \
         C_OUT = (v & 1) ? true : false;                 \
         value = ((v >> 1) |                             \
-                 (C_FLAG << 31));                       \
+                 (gba->C_FLAG << 31));                       \
     }
 #endif
 // OP Rd,Rb,Rm ROR Rs
 #ifndef VALUE_ROR_REG_C
  #define VALUE_ROR_REG_C \
-    unsigned int shift = reg[(opcode >> 8)&15].B.B0;    \
+    unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     if (LIKELY(shift & 0x1F)) {                         \
-        u32 v = reg[opcode & 0x0F].I;                   \
+        u32 v = gba->reg[opcode & 0x0F].I;                   \
         C_OUT = (v >> (shift - 1)) & 1 ? true : false;  \
         value = ((v << (32 - shift)) |                  \
                  (v >> shift));                         \
     } else {                                            \
-        value = reg[opcode & 0x0F].I;                   \
+        value = gba->reg[opcode & 0x0F].I;                   \
         if (shift)                                      \
             C_OUT = (value & 0x80000000 ? true : false);\
     }
@@ -937,108 +276,108 @@ static void count(u32 opcode, int cond_res)
 #define C_CHECK_PC(SETCOND) if (LIKELY(dest != 15)) { SETCOND }
 #ifndef OP_AND
  #define OP_AND \
-    u32 res = reg[(opcode>>16)&15].I & value;           \
-    reg[dest].I = res;
+    u32 res = gba->reg[(opcode>>16)&15].I & value;           \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_ANDS
  #define OP_ANDS   OP_AND C_CHECK_PC(C_SETCOND_LOGICAL)
 #endif
 #ifndef OP_EOR
  #define OP_EOR \
-    u32 res = reg[(opcode>>16)&15].I ^ value;           \
-    reg[dest].I = res;
+    u32 res = gba->reg[(opcode>>16)&15].I ^ value;           \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_EORS
  #define OP_EORS   OP_EOR C_CHECK_PC(C_SETCOND_LOGICAL)
 #endif
 #ifndef OP_SUB
  #define OP_SUB \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
     u32 res = lhs - rhs;                                \
-    reg[dest].I = res;
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_SUBS
  #define OP_SUBS   OP_SUB C_CHECK_PC(C_SETCOND_SUB)
 #endif
 #ifndef OP_RSB
  #define OP_RSB \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
     u32 res = rhs - lhs;                                \
-    reg[dest].I = res;
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_RSBS
  #define OP_RSBS   OP_RSB C_CHECK_PC(C_SETCOND_SUB)
 #endif
 #ifndef OP_ADD
  #define OP_ADD \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
     u32 res = lhs + rhs;                                \
-    reg[dest].I = res;
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_ADDS
  #define OP_ADDS   OP_ADD C_CHECK_PC(C_SETCOND_ADD)
 #endif
 #ifndef OP_ADC
  #define OP_ADC \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
-    u32 res = lhs + rhs + (u32)C_FLAG;                  \
-    reg[dest].I = res;
+    u32 res = lhs + rhs + (u32)gba->C_FLAG;                  \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_ADCS
  #define OP_ADCS   OP_ADC C_CHECK_PC(C_SETCOND_ADD)
 #endif
 #ifndef OP_SBC
  #define OP_SBC \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
-    u32 res = lhs - rhs - !((u32)C_FLAG);               \
-    reg[dest].I = res;
+    u32 res = lhs - rhs - !((u32)gba->C_FLAG);               \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_SBCS
  #define OP_SBCS   OP_SBC C_CHECK_PC(C_SETCOND_SUB)
 #endif
 #ifndef OP_RSC
  #define OP_RSC \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
-    u32 res = rhs - lhs - !((u32)C_FLAG);               \
-    reg[dest].I = res;
+    u32 res = rhs - lhs - !((u32)gba->C_FLAG);               \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_RSCS
  #define OP_RSCS   OP_RSC C_CHECK_PC(C_SETCOND_SUB)
 #endif
 #ifndef OP_TST
  #define OP_TST \
-    u32 res = reg[(opcode >> 16) & 0x0F].I & value;     \
+    u32 res = gba->reg[(opcode >> 16) & 0x0F].I & value;     \
     C_SETCOND_LOGICAL;
 #endif
 #ifndef OP_TEQ
  #define OP_TEQ \
-    u32 res = reg[(opcode >> 16) & 0x0F].I ^ value;     \
+    u32 res = gba->reg[(opcode >> 16) & 0x0F].I ^ value;     \
     C_SETCOND_LOGICAL;
 #endif
 #ifndef OP_CMP
  #define OP_CMP \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
     u32 res = lhs - rhs;                                \
     C_SETCOND_SUB;
 #endif
 #ifndef OP_CMN
  #define OP_CMN \
-    u32 lhs = reg[(opcode>>16)&15].I;                   \
+    u32 lhs = gba->reg[(opcode>>16)&15].I;                   \
     u32 rhs = value;                                    \
     u32 res = lhs + rhs;                                \
     C_SETCOND_ADD;
 #endif
 #ifndef OP_ORR
  #define OP_ORR \
-    u32 res = reg[(opcode >> 16) & 0x0F].I | value;     \
-    reg[dest].I = res;
+    u32 res = gba->reg[(opcode >> 16) & 0x0F].I | value;     \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_ORRS
  #define OP_ORRS   OP_ORR C_CHECK_PC(C_SETCOND_LOGICAL)
@@ -1046,15 +385,15 @@ static void count(u32 opcode, int cond_res)
 #ifndef OP_MOV
  #define OP_MOV \
     u32 res = value;                                    \
-    reg[dest].I = res;
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_MOVS
  #define OP_MOVS   OP_MOV C_CHECK_PC(C_SETCOND_LOGICAL)
 #endif
 #ifndef OP_BIC
  #define OP_BIC \
-    u32 res = reg[(opcode >> 16) & 0x0F].I & (~value);  \
-    reg[dest].I = res;
+    u32 res = gba->reg[(opcode >> 16) & 0x0F].I & (~value);  \
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_BICS
  #define OP_BICS   OP_BIC C_CHECK_PC(C_SETCOND_LOGICAL)
@@ -1062,7 +401,7 @@ static void count(u32 opcode, int cond_res)
 #ifndef OP_MVN
  #define OP_MVN \
     u32 res = ~value;                                   \
-    reg[dest].I = res;
+    gba->reg[dest].I = res;
 #endif
 #ifndef OP_MVNS
  #define OP_MVNS   OP_MVN C_CHECK_PC(C_SETCOND_LOGICAL)
@@ -1073,13 +412,13 @@ static void count(u32 opcode, int cond_res)
 #endif
 #ifndef SETCOND_MUL
  #define SETCOND_MUL \
-     N_FLAG = ((s32)reg[dest].I < 0) ? true : false;    \
-     Z_FLAG = reg[dest].I ? false : true;
+     gba->N_FLAG = ((s32)gba->reg[dest].I < 0) ? true : false;    \
+     gba->Z_FLAG = gba->reg[dest].I ? false : true;
 #endif
 #ifndef SETCOND_MULL
  #define SETCOND_MULL \
-     N_FLAG = (reg[dest].I & 0x80000000) ? true : false;\
-     Z_FLAG = reg[dest].I || reg[acc].I ? false : true;
+     gba->N_FLAG = (gba->reg[dest].I & 0x80000000) ? true : false;\
+     gba->Z_FLAG = gba->reg[dest].I || gba->reg[acc].I ? false : true;
 #endif
 
 #ifndef ALU_FINISH
@@ -1097,7 +436,7 @@ static void count(u32 opcode, int cond_res)
 #endif
 #ifndef RRX_OFFSET
  #define RRX_OFFSET \
-    offset = ((offset >> 1) | ((int)C_FLAG << 31));
+    offset = ((offset >> 1) | ((int)gba->C_FLAG << 31));
 #endif
 
 // ALU ops (except multiply) //////////////////////////////////////////////
@@ -1111,50 +450,50 @@ static void count(u32 opcode, int cond_res)
 #define ALU_INSN(ALU_INIT, GETVALUE, OP, MODECHANGE, ISREGSHIFT) \
     ALU_INIT GETVALUE OP ALU_FINISH;                            \
     if (LIKELY((opcode & 0x0000F000) != 0x0000F000)) {          \
-        clockTicks = 1 + ISREGSHIFT                             \
-                       + codeTicksAccessSeq32(armNextPC);       \
+        gba->clockTicks = 1 + ISREGSHIFT                             \
+                       + codeTicksAccessSeq32(gba, gba->armNextPC);       \
     } else {                                                    \
         MODECHANGE;                                             \
-        if (armState) {                                         \
-            reg[15].I &= 0xFFFFFFFC;                            \
-            armNextPC = reg[15].I;                              \
-            reg[15].I += 4;                                     \
+        if (gba->armState) {                                         \
+            gba->reg[15].I &= 0xFFFFFFFC;                            \
+            gba->armNextPC = gba->reg[15].I;                              \
+            gba->reg[15].I += 4;                                     \
             ARM_PREFETCH;                                       \
         } else {                                                \
-            reg[15].I &= 0xFFFFFFFE;                            \
-            armNextPC = reg[15].I;                              \
-            reg[15].I += 2;                                     \
+            gba->reg[15].I &= 0xFFFFFFFE;                            \
+            gba->armNextPC = gba->reg[15].I;                              \
+            gba->reg[15].I += 2;                                     \
             THUMB_PREFETCH;                                     \
         }                                                       \
-        clockTicks = 3 + ISREGSHIFT                             \
-                       + codeTicksAccess32(armNextPC)           \
-                       + codeTicksAccessSeq32(armNextPC)        \
-                       + codeTicksAccessSeq32(armNextPC);       \
+        gba->clockTicks = 3 + ISREGSHIFT                             \
+                       + codeTicksAccess32(gba, gba->armNextPC)           \
+                       + codeTicksAccessSeq32(gba, gba->armNextPC)        \
+                       + codeTicksAccessSeq32(gba, gba->armNextPC);       \
     }
 
 #define MODECHANGE_NO  /*nothing*/
-#define MODECHANGE_YES CPUSwitchMode(reg[17].I & 0x1f, false);
+#define MODECHANGE_YES CPUSwitchMode(gba, gba->reg[17].I & 0x1f, false);
 
 #define DEFINE_ALU_INSN_C(CODE1, CODE2, OP, MODECHANGE) \
-  static INSN_REGPARM void arm##CODE1##0(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSL_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##1(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSL_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE1##2(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSR_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##3(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSR_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE1##4(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ASR_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##5(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ASR_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE1##6(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ROR_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##7(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ROR_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE2##0(u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_IMM_C,     OP_##OP, MODECHANGE_##MODECHANGE, 0); }
+  static INSN_REGPARM void arm##CODE1##0(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSL_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##1(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSL_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE1##2(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSR_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##3(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_LSR_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE1##4(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ASR_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##5(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ASR_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE1##6(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ROR_IMM_C, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##7(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_ROR_REG_C, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE2##0(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_C, VALUE_IMM_C,     OP_##OP, MODECHANGE_##MODECHANGE, 0); }
 #define DEFINE_ALU_INSN_NC(CODE1, CODE2, OP, MODECHANGE) \
-  static INSN_REGPARM void arm##CODE1##0(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSL_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##1(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSL_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE1##2(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSR_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##3(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSR_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE1##4(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ASR_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##5(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ASR_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE1##6(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ROR_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
-  static INSN_REGPARM void arm##CODE1##7(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ROR_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
-  static INSN_REGPARM void arm##CODE2##0(u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_IMM_NC,     OP_##OP, MODECHANGE_##MODECHANGE, 0); }
+  static INSN_REGPARM void arm##CODE1##0(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSL_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##1(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSL_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE1##2(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSR_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##3(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_LSR_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE1##4(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ASR_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##5(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ASR_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE1##6(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ROR_IMM_NC, OP_##OP, MODECHANGE_##MODECHANGE, 0); }\
+  static INSN_REGPARM void arm##CODE1##7(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_ROR_REG_NC, OP_##OP, MODECHANGE_##MODECHANGE, 1); }\
+  static INSN_REGPARM void arm##CODE2##0(GBASystem *gba, u32 opcode) { ALU_INSN(ALU_INIT_NC, VALUE_IMM_NC,     OP_##OP, MODECHANGE_##MODECHANGE, 0); }
 
 // AND
 DEFINE_ALU_INSN_NC(00, 20, AND,  NO)
@@ -1235,7 +574,7 @@ DEFINE_ALU_INSN_C (1F, 3F, MVNS, YES)
 // CYCLES: base cycle count (1, 2, or 3)
 #define MUL_INSN(OP, SETCOND, CYCLES) \
     int mult = (opcode & 0x0F);                         \
-    u32 rs = reg[(opcode >> 8) & 0x0F].I;               \
+    u32 rs = gba->reg[(opcode >> 8) & 0x0F].I;               \
     int acc = (opcode >> 12) & 0x0F;   /* or destLo */  \
     int dest = (opcode >> 16) & 0x0F;  /* or destHi */  \
     OP;                                                 \
@@ -1243,120 +582,120 @@ DEFINE_ALU_INSN_C (1F, 3F, MVNS, YES)
     if ((s32)rs < 0)                                    \
         rs = ~rs;                                       \
     if ((rs & 0xFFFFFF00) == 0)                         \
-        clockTicks += 0;                                \
+        gba->clockTicks += 0;                                \
     else if ((rs & 0xFFFF0000) == 0)                    \
-        clockTicks += 1;                                \
+        gba->clockTicks += 1;                                \
     else if ((rs & 0xFF000000) == 0)                    \
-        clockTicks += 2;                                \
+        gba->clockTicks += 2;                                \
     else                                                \
-        clockTicks += 3;                                \
-    if (busPrefetchCount == 0)                          \
-        busPrefetchCount = ((busPrefetchCount+1)<<clockTicks) - 1; \
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+        gba->clockTicks += 3;                                \
+    if (gba->busPrefetchCount == 0)                          \
+        gba->busPrefetchCount = ((gba->busPrefetchCount+1)<<gba->clockTicks) - 1; \
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 
 #define OP_MUL \
-    reg[dest].I = reg[mult].I * rs;
+    gba->reg[dest].I = gba->reg[mult].I * rs;
 #define OP_MLA \
-    reg[dest].I = reg[mult].I * rs + reg[acc].I;
+    gba->reg[dest].I = gba->reg[mult].I * rs + gba->reg[acc].I;
 #define OP_MULL(SIGN) \
-    SIGN##64 res = (SIGN##64)(SIGN##32)reg[mult].I      \
+    SIGN##64 res = (SIGN##64)(SIGN##32)gba->reg[mult].I      \
                  * (SIGN##64)(SIGN##32)rs;              \
-    reg[acc].I = (u32)res;                              \
-    reg[dest].I = (u32)(res >> 32);
+    gba->reg[acc].I = (u32)res;                              \
+    gba->reg[dest].I = (u32)(res >> 32);
 #define OP_MLAL(SIGN) \
-    SIGN##64 res = ((SIGN##64)reg[dest].I<<32 | reg[acc].I)\
-                 + ((SIGN##64)(SIGN##32)reg[mult].I     \
+    SIGN##64 res = ((SIGN##64)gba->reg[dest].I<<32 | gba->reg[acc].I)\
+                 + ((SIGN##64)(SIGN##32)gba->reg[mult].I     \
                     * (SIGN##64)(SIGN##32)rs);          \
-    reg[acc].I = (u32)res;                              \
-    reg[dest].I = (u32)(res >> 32);
+    gba->reg[acc].I = (u32)res;                              \
+    gba->reg[dest].I = (u32)(res >> 32);
 #define OP_UMULL OP_MULL(u)
 #define OP_UMLAL OP_MLAL(u)
 #define OP_SMULL OP_MULL(s)
 #define OP_SMLAL OP_MLAL(s)
 
 // MUL Rd, Rm, Rs
-static INSN_REGPARM void arm009(u32 opcode) { MUL_INSN(OP_MUL, SETCOND_NONE, 1); }
+static INSN_REGPARM void arm009(GBASystem *gba, u32 opcode) { MUL_INSN(OP_MUL, SETCOND_NONE, 1); }
 // MULS Rd, Rm, Rs
-static INSN_REGPARM void arm019(u32 opcode) { MUL_INSN(OP_MUL, SETCOND_MUL, 1); }
+static INSN_REGPARM void arm019(GBASystem *gba, u32 opcode) { MUL_INSN(OP_MUL, SETCOND_MUL, 1); }
 
 // MLA Rd, Rm, Rs, Rn
-static INSN_REGPARM void arm029(u32 opcode) { MUL_INSN(OP_MLA, SETCOND_NONE, 2); }
+static INSN_REGPARM void arm029(GBASystem *gba, u32 opcode) { MUL_INSN(OP_MLA, SETCOND_NONE, 2); }
 // MLAS Rd, Rm, Rs, Rn
-static INSN_REGPARM void arm039(u32 opcode) { MUL_INSN(OP_MLA, SETCOND_MUL, 2); }
+static INSN_REGPARM void arm039(GBASystem *gba, u32 opcode) { MUL_INSN(OP_MLA, SETCOND_MUL, 2); }
 
 // UMULL RdLo, RdHi, Rn, Rs
-static INSN_REGPARM void arm089(u32 opcode) { MUL_INSN(OP_UMULL, SETCOND_NONE, 2); }
+static INSN_REGPARM void arm089(GBASystem *gba, u32 opcode) { MUL_INSN(OP_UMULL, SETCOND_NONE, 2); }
 // UMULLS RdLo, RdHi, Rn, Rs
-static INSN_REGPARM void arm099(u32 opcode) { MUL_INSN(OP_UMULL, SETCOND_MULL, 2); }
+static INSN_REGPARM void arm099(GBASystem *gba, u32 opcode) { MUL_INSN(OP_UMULL, SETCOND_MULL, 2); }
 
 // UMLAL RdLo, RdHi, Rn, Rs
-static INSN_REGPARM void arm0A9(u32 opcode) { MUL_INSN(OP_UMLAL, SETCOND_NONE, 3); }
+static INSN_REGPARM void arm0A9(GBASystem *gba, u32 opcode) { MUL_INSN(OP_UMLAL, SETCOND_NONE, 3); }
 // UMLALS RdLo, RdHi, Rn, Rs
-static INSN_REGPARM void arm0B9(u32 opcode) { MUL_INSN(OP_UMLAL, SETCOND_MULL, 3); }
+static INSN_REGPARM void arm0B9(GBASystem *gba, u32 opcode) { MUL_INSN(OP_UMLAL, SETCOND_MULL, 3); }
 
 // SMULL RdLo, RdHi, Rm, Rs
-static INSN_REGPARM void arm0C9(u32 opcode) { MUL_INSN(OP_SMULL, SETCOND_NONE, 2); }
+static INSN_REGPARM void arm0C9(GBASystem *gba, u32 opcode) { MUL_INSN(OP_SMULL, SETCOND_NONE, 2); }
 // SMULLS RdLo, RdHi, Rm, Rs
-static INSN_REGPARM void arm0D9(u32 opcode) { MUL_INSN(OP_SMULL, SETCOND_MULL, 2); }
+static INSN_REGPARM void arm0D9(GBASystem *gba, u32 opcode) { MUL_INSN(OP_SMULL, SETCOND_MULL, 2); }
 
 // SMLAL RdLo, RdHi, Rm, Rs
-static INSN_REGPARM void arm0E9(u32 opcode) { MUL_INSN(OP_SMLAL, SETCOND_NONE, 3); }
+static INSN_REGPARM void arm0E9(GBASystem *gba, u32 opcode) { MUL_INSN(OP_SMLAL, SETCOND_NONE, 3); }
 // SMLALS RdLo, RdHi, Rm, Rs
-static INSN_REGPARM void arm0F9(u32 opcode) { MUL_INSN(OP_SMLAL, SETCOND_MULL, 3); }
+static INSN_REGPARM void arm0F9(GBASystem *gba, u32 opcode) { MUL_INSN(OP_SMLAL, SETCOND_MULL, 3); }
 
 // Misc instructions //////////////////////////////////////////////////////
 
 // SWP Rd, Rm, [Rn]
-static INSN_REGPARM void arm109(u32 opcode)
+static INSN_REGPARM void arm109(GBASystem *gba, u32 opcode)
 {
-    u32 address = reg[(opcode >> 16) & 15].I;
-    u32 temp = CPUReadMemory(address);
-    CPUWriteMemory(address, reg[opcode&15].I);
-    reg[(opcode >> 12) & 15].I = temp;
-    clockTicks = 4 + dataTicksAccess32(address) + dataTicksAccess32(address)
-                   + codeTicksAccess32(armNextPC);
+    u32 address = gba->reg[(opcode >> 16) & 15].I;
+    u32 temp = CPUReadMemory(gba, address);
+    CPUWriteMemory(gba, address, gba->reg[opcode&15].I);
+    gba->reg[(opcode >> 12) & 15].I = temp;
+    gba->clockTicks = 4 + dataTicksAccess32(gba, address) + dataTicksAccess32(gba, address)
+                   + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // SWPB Rd, Rm, [Rn]
-static INSN_REGPARM void arm149(u32 opcode)
+static INSN_REGPARM void arm149(GBASystem *gba, u32 opcode)
 {
-    u32 address = reg[(opcode >> 16) & 15].I;
-    u32 temp = CPUReadByte(address);
-    CPUWriteByte(address, reg[opcode&15].B.B0);
-    reg[(opcode>>12)&15].I = temp;
-    clockTicks = 4 + dataTicksAccess32(address) + dataTicksAccess32(address)
-                   + codeTicksAccess32(armNextPC);
+    u32 address = gba->reg[(opcode >> 16) & 15].I;
+    u32 temp = CPUReadByte(gba, address);
+    CPUWriteByte(gba, address, gba->reg[opcode&15].B.B0);
+    gba->reg[(opcode>>12)&15].I = temp;
+    gba->clockTicks = 4 + dataTicksAccess32(gba, address) + dataTicksAccess32(gba, address)
+                   + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // MRS Rd, CPSR
-static INSN_REGPARM void arm100(u32 opcode)
+static INSN_REGPARM void arm100(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FFF0FFF) == 0x010F0000)) {
-        CPUUpdateCPSR();
-        reg[(opcode >> 12) & 0x0F].I = reg[16].I;
+        CPUUpdateCPSR(gba);
+        gba->reg[(opcode >> 12) & 0x0F].I = gba->reg[16].I;
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
 // MRS Rd, SPSR
-static INSN_REGPARM void arm140(u32 opcode)
+static INSN_REGPARM void arm140(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FFF0FFF) == 0x014F0000)) {
-        reg[(opcode >> 12) & 0x0F].I = reg[17].I;
+        gba->reg[(opcode >> 12) & 0x0F].I = gba->reg[17].I;
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
 // MSR CPSR_fields, Rm
-static INSN_REGPARM void arm120(u32 opcode)
+static INSN_REGPARM void arm120(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FF0FFF0) == 0x0120F000)) {
-        CPUUpdateCPSR();
-        u32 value = reg[opcode & 15].I;
-        u32 newValue = reg[16].I;
-        if (armMode > 0x10) {
+        CPUUpdateCPSR(gba);
+        u32 value = gba->reg[opcode & 15].I;
+        u32 newValue = gba->reg[16].I;
+        if (gba->armMode > 0x10) {
             if (opcode & 0x00010000)
                 newValue = (newValue & 0xFFFFFF00) | (value & 0x000000FF);
             if (opcode & 0x00020000)
@@ -1367,50 +706,50 @@ static INSN_REGPARM void arm120(u32 opcode)
         if (opcode & 0x00080000)
             newValue = (newValue & 0x00FFFFFF) | (value & 0xFF000000);
         newValue |= 0x10;
-        CPUSwitchMode(newValue & 0x1F, false);
-        reg[16].I = newValue;
-        CPUUpdateFlags();
-        if (!armState) {  // this should not be allowed, but it seems to work
+        CPUSwitchMode(gba, newValue & 0x1F, false);
+        gba->reg[16].I = newValue;
+        CPUUpdateFlags(gba);
+        if (!gba->armState) {  // this should not be allowed, but it seems to work
             THUMB_PREFETCH;
-            reg[15].I = armNextPC + 2;
+            gba->reg[15].I = gba->armNextPC + 2;
         }
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
 // MSR SPSR_fields, Rm
-static INSN_REGPARM void arm160(u32 opcode)
+static INSN_REGPARM void arm160(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FF0FFF0) == 0x0160F000)) {
-        u32 value = reg[opcode & 15].I;
-        if (armMode > 0x10 && armMode < 0x1F) {
+        u32 value = gba->reg[opcode & 15].I;
+        if (gba->armMode > 0x10 && gba->armMode < 0x1F) {
             if (opcode & 0x00010000)
-                reg[17].I = (reg[17].I & 0xFFFFFF00) | (value & 0x000000FF);
+                gba->reg[17].I = (gba->reg[17].I & 0xFFFFFF00) | (value & 0x000000FF);
             if (opcode & 0x00020000)
-                reg[17].I = (reg[17].I & 0xFFFF00FF) | (value & 0x0000FF00);
+                gba->reg[17].I = (gba->reg[17].I & 0xFFFF00FF) | (value & 0x0000FF00);
             if (opcode & 0x00040000)
-                reg[17].I = (reg[17].I & 0xFF00FFFF) | (value & 0x00FF0000);
+                gba->reg[17].I = (gba->reg[17].I & 0xFF00FFFF) | (value & 0x00FF0000);
             if (opcode & 0x00080000)
-                reg[17].I = (reg[17].I & 0x00FFFFFF) | (value & 0xFF000000);
+                gba->reg[17].I = (gba->reg[17].I & 0x00FFFFFF) | (value & 0xFF000000);
         }
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
 // MSR CPSR_fields, #
-static INSN_REGPARM void arm320(u32 opcode)
+static INSN_REGPARM void arm320(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FF0F000) == 0x0320F000)) {
-        CPUUpdateCPSR();
+        CPUUpdateCPSR(gba);
         u32 value = opcode & 0xFF;
         int shift = (opcode & 0xF00) >> 7;
         if (shift) {
             ROR_IMM_MSR;
         }
-        u32 newValue = reg[16].I;
-        if (armMode > 0x10) {
+        u32 newValue = gba->reg[16].I;
+        if (gba->armMode > 0x10) {
             if (opcode & 0x00010000)
                 newValue = (newValue & 0xFFFFFF00) | (value & 0x000000FF);
             if (opcode & 0x00020000)
@@ -1423,68 +762,68 @@ static INSN_REGPARM void arm320(u32 opcode)
 
         newValue |= 0x10;
 
-        CPUSwitchMode(newValue & 0x1F, false);
-        reg[16].I = newValue;
-        CPUUpdateFlags();
-        if (!armState) {  // this should not be allowed, but it seems to work
+        CPUSwitchMode(gba, newValue & 0x1F, false);
+        gba->reg[16].I = newValue;
+        CPUUpdateFlags(gba);
+        if (!gba->armState) {  // this should not be allowed, but it seems to work
             THUMB_PREFETCH;
-            reg[15].I = armNextPC + 2;
+            gba->reg[15].I = gba->armNextPC + 2;
         }
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
 // MSR SPSR_fields, #
-static INSN_REGPARM void arm360(u32 opcode)
+static INSN_REGPARM void arm360(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FF0F000) == 0x0360F000)) {
-        if (armMode > 0x10 && armMode < 0x1F) {
+        if (gba->armMode > 0x10 && gba->armMode < 0x1F) {
             u32 value = opcode & 0xFF;
             int shift = (opcode & 0xF00) >> 7;
             if (shift) {
                 ROR_IMM_MSR;
             }
             if (opcode & 0x00010000)
-                reg[17].I = (reg[17].I & 0xFFFFFF00) | (value & 0x000000FF);
+                gba->reg[17].I = (gba->reg[17].I & 0xFFFFFF00) | (value & 0x000000FF);
             if (opcode & 0x00020000)
-                reg[17].I = (reg[17].I & 0xFFFF00FF) | (value & 0x0000FF00);
+                gba->reg[17].I = (gba->reg[17].I & 0xFFFF00FF) | (value & 0x0000FF00);
             if (opcode & 0x00040000)
-                reg[17].I = (reg[17].I & 0xFF00FFFF) | (value & 0x00FF0000);
+                gba->reg[17].I = (gba->reg[17].I & 0xFF00FFFF) | (value & 0x00FF0000);
             if (opcode & 0x00080000)
-                reg[17].I = (reg[17].I & 0x00FFFFFF) | (value & 0xFF000000);
+                gba->reg[17].I = (gba->reg[17].I & 0x00FFFFFF) | (value & 0xFF000000);
         }
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
 // BX Rm
-static INSN_REGPARM void arm121(u32 opcode)
+static INSN_REGPARM void arm121(GBASystem *gba, u32 opcode)
 {
     if (LIKELY((opcode & 0x0FFFFFF0) == 0x012FFF10)) {
         int base = opcode & 0x0F;
-        busPrefetchCount = 0;
-        armState = reg[base].I & 1 ? false : true;
-        if (armState) {
-            reg[15].I = reg[base].I & 0xFFFFFFFC;
-            armNextPC = reg[15].I;
-            reg[15].I += 4;
+        gba->busPrefetchCount = 0;
+        gba->armState = gba->reg[base].I & 1 ? false : true;
+        if (gba->armState) {
+            gba->reg[15].I = gba->reg[base].I & 0xFFFFFFFC;
+            gba->armNextPC = gba->reg[15].I;
+            gba->reg[15].I += 4;
             ARM_PREFETCH;
-            clockTicks = 3 + codeTicksAccessSeq32(armNextPC)
-                           + codeTicksAccessSeq32(armNextPC)
-                           + codeTicksAccess32(armNextPC);
+            gba->clockTicks = 3 + codeTicksAccessSeq32(gba, gba->armNextPC)
+                           + codeTicksAccessSeq32(gba, gba->armNextPC)
+                           + codeTicksAccess32(gba, gba->armNextPC);
         } else {
-            reg[15].I = reg[base].I & 0xFFFFFFFE;
-            armNextPC = reg[15].I;
-            reg[15].I += 2;
+            gba->reg[15].I = gba->reg[base].I & 0xFFFFFFFE;
+            gba->armNextPC = gba->reg[15].I;
+            gba->reg[15].I += 2;
             THUMB_PREFETCH;
-            clockTicks = 3 + codeTicksAccessSeq16(armNextPC)
-                           + codeTicksAccessSeq16(armNextPC)
-                           + codeTicksAccess16(armNextPC);
+            gba->clockTicks = 3 + codeTicksAccessSeq16(gba, gba->armNextPC)
+                           + codeTicksAccessSeq16(gba, gba->armNextPC)
+                           + codeTicksAccess16(gba, gba->armNextPC);
         }
     } else {
-        armUnknownInsn(opcode);
+        armUnknownInsn(gba, opcode);
     }
 }
 
@@ -1495,51 +834,51 @@ static INSN_REGPARM void arm121(u32 opcode)
 #define OFFSET_IMM8 \
     int offset = ((opcode & 0x0F) | ((opcode>>4) & 0xF0));
 #define OFFSET_REG \
-    int offset = reg[opcode & 15].I;
+    int offset = gba->reg[opcode & 15].I;
 #define OFFSET_LSL \
-    int offset = reg[opcode & 15].I << ((opcode>>7) & 31);
+    int offset = gba->reg[opcode & 15].I << ((opcode>>7) & 31);
 #define OFFSET_LSR \
     int shift = (opcode >> 7) & 31;                     \
-    int offset = shift ? reg[opcode & 15].I >> shift : 0;
+    int offset = shift ? gba->reg[opcode & 15].I >> shift : 0;
 #define OFFSET_ASR \
     int shift = (opcode >> 7) & 31;                     \
     int offset;                                         \
     if (shift)                                          \
-        offset = (int)((s32)reg[opcode & 15].I >> shift);\
-    else if (reg[opcode & 15].I & 0x80000000)           \
+        offset = (int)((s32)gba->reg[opcode & 15].I >> shift);\
+    else if (gba->reg[opcode & 15].I & 0x80000000)           \
         offset = 0xFFFFFFFF;                            \
     else                                                \
         offset = 0;
 #define OFFSET_ROR \
     int shift = (opcode >> 7) & 31;                     \
-    u32 offset = reg[opcode & 15].I;                    \
+    u32 offset = gba->reg[opcode & 15].I;                    \
     if (shift) {                                        \
         ROR_OFFSET;                                     \
     } else {                                            \
         RRX_OFFSET;                                     \
     }
 
-#define ADDRESS_POST (reg[base].I)
-#define ADDRESS_PREDEC (reg[base].I - offset)
-#define ADDRESS_PREINC (reg[base].I + offset)
+#define ADDRESS_POST (gba->reg[base].I)
+#define ADDRESS_PREDEC (gba->reg[base].I - offset)
+#define ADDRESS_PREINC (gba->reg[base].I + offset)
 
-#define OP_STR    CPUWriteMemory(address, reg[dest].I)
-#define OP_STRH   CPUWriteHalfWord(address, reg[dest].W.W0)
-#define OP_STRB   CPUWriteByte(address, reg[dest].B.B0)
-#define OP_LDR    reg[dest].I = CPUReadMemory(address)
-#define OP_LDRH   reg[dest].I = CPUReadHalfWord(address)
-#define OP_LDRB   reg[dest].I = CPUReadByte(address)
-#define OP_LDRSH  reg[dest].I = (s16)CPUReadHalfWordSigned(address)
-#define OP_LDRSB  reg[dest].I = (s8)CPUReadByte(address)
+#define OP_STR    CPUWriteMemory(gba, address, gba->reg[dest].I)
+#define OP_STRH   CPUWriteHalfWord(gba, address, gba->reg[dest].W.W0)
+#define OP_STRB   CPUWriteByte(gba, address, gba->reg[dest].B.B0)
+#define OP_LDR    gba->reg[dest].I = CPUReadMemory(gba, address)
+#define OP_LDRH   gba->reg[dest].I = CPUReadHalfWord(gba, address)
+#define OP_LDRB   gba->reg[dest].I = CPUReadByte(gba, address)
+#define OP_LDRSH  gba->reg[dest].I = (s16)CPUReadHalfWordSigned(gba, address)
+#define OP_LDRSB  gba->reg[dest].I = (s8)CPUReadByte(gba, address)
 
 #define WRITEBACK_NONE     /*nothing*/
-#define WRITEBACK_PRE      reg[base].I = address
-#define WRITEBACK_POSTDEC  reg[base].I = address - offset
-#define WRITEBACK_POSTINC  reg[base].I = address + offset
+#define WRITEBACK_PRE      gba->reg[base].I = address
+#define WRITEBACK_POSTDEC  gba->reg[base].I = address - offset
+#define WRITEBACK_POSTINC  gba->reg[base].I = address + offset
 
 #define LDRSTR_INIT(CALC_OFFSET, CALC_ADDRESS) \
-    if (busPrefetchCount == 0)                          \
-        busPrefetch = busPrefetchEnable;                \
+    if (gba->busPrefetchCount == 0)                          \
+        gba->busPrefetch = gba->busPrefetchEnable;                \
     int dest = (opcode >> 12) & 15;                     \
     int base = (opcode >> 16) & 15;                     \
     CALC_OFFSET;                                        \
@@ -1550,8 +889,8 @@ static INSN_REGPARM void arm121(u32 opcode)
     WRITEBACK1;                                         \
     STORE_DATA;                                         \
     WRITEBACK2;                                         \
-    clockTicks = 2 + dataTicksAccess##SIZE(address)     \
-                   + codeTicksAccess32(armNextPC);
+    gba->clockTicks = 2 + dataTicksAccess##SIZE(gba, address)     \
+                   + codeTicksAccess32(gba, gba->armNextPC);
 #define LDR(CALC_OFFSET, CALC_ADDRESS, LOAD_DATA, WRITEBACK, SIZE) \
     LDRSTR_INIT(CALC_OFFSET, CALC_ADDRESS);             \
     LOAD_DATA;                                          \
@@ -1559,17 +898,17 @@ static INSN_REGPARM void arm121(u32 opcode)
     {                                                   \
         WRITEBACK;                                      \
     }                                                   \
-    clockTicks = 0;                                     \
+    gba->clockTicks = 0;                                     \
     if (dest == 15) {                                   \
-        reg[15].I &= 0xFFFFFFFC;                        \
-        armNextPC = reg[15].I;                          \
-        reg[15].I += 4;                                 \
+        gba->reg[15].I &= 0xFFFFFFFC;                        \
+        gba->armNextPC = gba->reg[15].I;                          \
+        gba->reg[15].I += 4;                                 \
         ARM_PREFETCH;                                   \
-        clockTicks += 2 + dataTicksAccessSeq32(address) \
-                        + dataTicksAccessSeq32(address);\
+        gba->clockTicks += 2 + dataTicksAccessSeq32(gba, address) \
+                        + dataTicksAccessSeq32(gba, address);\
     }                                                   \
-    clockTicks += 3 + dataTicksAccess##SIZE(address)    \
-                    + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 3 + dataTicksAccess##SIZE(gba, address)    \
+                    + codeTicksAccess32(gba, gba->armNextPC);
 #define STR_POSTDEC(CALC_OFFSET, STORE_DATA, SIZE) \
   STR(CALC_OFFSET, ADDRESS_POST, STORE_DATA, WRITEBACK_NONE, WRITEBACK_POSTDEC, SIZE)
 #define STR_POSTINC(CALC_OFFSET, STORE_DATA, SIZE) \
@@ -1596,380 +935,380 @@ static INSN_REGPARM void arm121(u32 opcode)
   LDR(CALC_OFFSET, ADDRESS_PREINC, LOAD_DATA, WRITEBACK_PRE, SIZE)
 
 // STRH Rd, [Rn], -Rm
-static INSN_REGPARM void arm00B(u32 opcode) { STR_POSTDEC(OFFSET_REG, OP_STRH, 16); }
+static INSN_REGPARM void arm00B(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_REG, OP_STRH, 16); }
 // STRH Rd, [Rn], #-offset
-static INSN_REGPARM void arm04B(u32 opcode) { STR_POSTDEC(OFFSET_IMM8, OP_STRH, 16); }
+static INSN_REGPARM void arm04B(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_IMM8, OP_STRH, 16); }
 // STRH Rd, [Rn], Rm
-static INSN_REGPARM void arm08B(u32 opcode) { STR_POSTINC(OFFSET_REG, OP_STRH, 16); }
+static INSN_REGPARM void arm08B(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_REG, OP_STRH, 16); }
 // STRH Rd, [Rn], #offset
-static INSN_REGPARM void arm0CB(u32 opcode) { STR_POSTINC(OFFSET_IMM8, OP_STRH, 16); }
+static INSN_REGPARM void arm0CB(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_IMM8, OP_STRH, 16); }
 // STRH Rd, [Rn, -Rm]
-static INSN_REGPARM void arm10B(u32 opcode) { STR_PREDEC(OFFSET_REG, OP_STRH, 16); }
+static INSN_REGPARM void arm10B(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_REG, OP_STRH, 16); }
 // STRH Rd, [Rn, -Rm]!
-static INSN_REGPARM void arm12B(u32 opcode) { STR_PREDEC_WB(OFFSET_REG, OP_STRH, 16); }
+static INSN_REGPARM void arm12B(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_REG, OP_STRH, 16); }
 // STRH Rd, [Rn, -#offset]
-static INSN_REGPARM void arm14B(u32 opcode) { STR_PREDEC(OFFSET_IMM8, OP_STRH, 16); }
+static INSN_REGPARM void arm14B(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_IMM8, OP_STRH, 16); }
 // STRH Rd, [Rn, -#offset]!
-static INSN_REGPARM void arm16B(u32 opcode) { STR_PREDEC_WB(OFFSET_IMM8, OP_STRH, 16); }
+static INSN_REGPARM void arm16B(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_IMM8, OP_STRH, 16); }
 // STRH Rd, [Rn, Rm]
-static INSN_REGPARM void arm18B(u32 opcode) { STR_PREINC(OFFSET_REG, OP_STRH, 16); }
+static INSN_REGPARM void arm18B(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_REG, OP_STRH, 16); }
 // STRH Rd, [Rn, Rm]!
-static INSN_REGPARM void arm1AB(u32 opcode) { STR_PREINC_WB(OFFSET_REG, OP_STRH, 16); }
+static INSN_REGPARM void arm1AB(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_REG, OP_STRH, 16); }
 // STRH Rd, [Rn, #offset]
-static INSN_REGPARM void arm1CB(u32 opcode) { STR_PREINC(OFFSET_IMM8, OP_STRH, 16); }
+static INSN_REGPARM void arm1CB(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_IMM8, OP_STRH, 16); }
 // STRH Rd, [Rn, #offset]!
-static INSN_REGPARM void arm1EB(u32 opcode) { STR_PREINC_WB(OFFSET_IMM8, OP_STRH, 16); }
+static INSN_REGPARM void arm1EB(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_IMM8, OP_STRH, 16); }
 
 // LDRH Rd, [Rn], -Rm
-static INSN_REGPARM void arm01B(u32 opcode) { LDR_POSTDEC(OFFSET_REG, OP_LDRH, 16); }
+static INSN_REGPARM void arm01B(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_REG, OP_LDRH, 16); }
 // LDRH Rd, [Rn], #-offset
-static INSN_REGPARM void arm05B(u32 opcode) { LDR_POSTDEC(OFFSET_IMM8, OP_LDRH, 16); }
+static INSN_REGPARM void arm05B(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_IMM8, OP_LDRH, 16); }
 // LDRH Rd, [Rn], Rm
-static INSN_REGPARM void arm09B(u32 opcode) { LDR_POSTINC(OFFSET_REG, OP_LDRH, 16); }
+static INSN_REGPARM void arm09B(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_REG, OP_LDRH, 16); }
 // LDRH Rd, [Rn], #offset
-static INSN_REGPARM void arm0DB(u32 opcode) { LDR_POSTINC(OFFSET_IMM8, OP_LDRH, 16); }
+static INSN_REGPARM void arm0DB(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_IMM8, OP_LDRH, 16); }
 // LDRH Rd, [Rn, -Rm]
-static INSN_REGPARM void arm11B(u32 opcode) { LDR_PREDEC(OFFSET_REG, OP_LDRH, 16); }
+static INSN_REGPARM void arm11B(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_REG, OP_LDRH, 16); }
 // LDRH Rd, [Rn, -Rm]!
-static INSN_REGPARM void arm13B(u32 opcode) { LDR_PREDEC_WB(OFFSET_REG, OP_LDRH, 16); }
+static INSN_REGPARM void arm13B(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_REG, OP_LDRH, 16); }
 // LDRH Rd, [Rn, -#offset]
-static INSN_REGPARM void arm15B(u32 opcode) { LDR_PREDEC(OFFSET_IMM8, OP_LDRH, 16); }
+static INSN_REGPARM void arm15B(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_IMM8, OP_LDRH, 16); }
 // LDRH Rd, [Rn, -#offset]!
-static INSN_REGPARM void arm17B(u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM8, OP_LDRH, 16); }
+static INSN_REGPARM void arm17B(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM8, OP_LDRH, 16); }
 // LDRH Rd, [Rn, Rm]
-static INSN_REGPARM void arm19B(u32 opcode) { LDR_PREINC(OFFSET_REG, OP_LDRH, 16); }
+static INSN_REGPARM void arm19B(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_REG, OP_LDRH, 16); }
 // LDRH Rd, [Rn, Rm]!
-static INSN_REGPARM void arm1BB(u32 opcode) { LDR_PREINC_WB(OFFSET_REG, OP_LDRH, 16); }
+static INSN_REGPARM void arm1BB(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_REG, OP_LDRH, 16); }
 // LDRH Rd, [Rn, #offset]
-static INSN_REGPARM void arm1DB(u32 opcode) { LDR_PREINC(OFFSET_IMM8, OP_LDRH, 16); }
+static INSN_REGPARM void arm1DB(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_IMM8, OP_LDRH, 16); }
 // LDRH Rd, [Rn, #offset]!
-static INSN_REGPARM void arm1FB(u32 opcode) { LDR_PREINC_WB(OFFSET_IMM8, OP_LDRH, 16); }
+static INSN_REGPARM void arm1FB(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_IMM8, OP_LDRH, 16); }
 
 // LDRSB Rd, [Rn], -Rm
-static INSN_REGPARM void arm01D(u32 opcode) { LDR_POSTDEC(OFFSET_REG, OP_LDRSB, 16); }
+static INSN_REGPARM void arm01D(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_REG, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn], #-offset
-static INSN_REGPARM void arm05D(u32 opcode) { LDR_POSTDEC(OFFSET_IMM8, OP_LDRSB, 16); }
+static INSN_REGPARM void arm05D(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_IMM8, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn], Rm
-static INSN_REGPARM void arm09D(u32 opcode) { LDR_POSTINC(OFFSET_REG, OP_LDRSB, 16); }
+static INSN_REGPARM void arm09D(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_REG, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn], #offset
-static INSN_REGPARM void arm0DD(u32 opcode) { LDR_POSTINC(OFFSET_IMM8, OP_LDRSB, 16); }
+static INSN_REGPARM void arm0DD(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_IMM8, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, -Rm]
-static INSN_REGPARM void arm11D(u32 opcode) { LDR_PREDEC(OFFSET_REG, OP_LDRSB, 16); }
+static INSN_REGPARM void arm11D(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_REG, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, -Rm]!
-static INSN_REGPARM void arm13D(u32 opcode) { LDR_PREDEC_WB(OFFSET_REG, OP_LDRSB, 16); }
+static INSN_REGPARM void arm13D(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_REG, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, -#offset]
-static INSN_REGPARM void arm15D(u32 opcode) { LDR_PREDEC(OFFSET_IMM8, OP_LDRSB, 16); }
+static INSN_REGPARM void arm15D(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_IMM8, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, -#offset]!
-static INSN_REGPARM void arm17D(u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM8, OP_LDRSB, 16); }
+static INSN_REGPARM void arm17D(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM8, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, Rm]
-static INSN_REGPARM void arm19D(u32 opcode) { LDR_PREINC(OFFSET_REG, OP_LDRSB, 16); }
+static INSN_REGPARM void arm19D(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_REG, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, Rm]!
-static INSN_REGPARM void arm1BD(u32 opcode) { LDR_PREINC_WB(OFFSET_REG, OP_LDRSB, 16); }
+static INSN_REGPARM void arm1BD(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_REG, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, #offset]
-static INSN_REGPARM void arm1DD(u32 opcode) { LDR_PREINC(OFFSET_IMM8, OP_LDRSB, 16); }
+static INSN_REGPARM void arm1DD(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_IMM8, OP_LDRSB, 16); }
 // LDRSB Rd, [Rn, #offset]!
-static INSN_REGPARM void arm1FD(u32 opcode) { LDR_PREINC_WB(OFFSET_IMM8, OP_LDRSB, 16); }
+static INSN_REGPARM void arm1FD(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_IMM8, OP_LDRSB, 16); }
 
 // LDRSH Rd, [Rn], -Rm
-static INSN_REGPARM void arm01F(u32 opcode) { LDR_POSTDEC(OFFSET_REG, OP_LDRSH, 16); }
+static INSN_REGPARM void arm01F(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_REG, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn], #-offset
-static INSN_REGPARM void arm05F(u32 opcode) { LDR_POSTDEC(OFFSET_IMM8, OP_LDRSH, 16); }
+static INSN_REGPARM void arm05F(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_IMM8, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn], Rm
-static INSN_REGPARM void arm09F(u32 opcode) { LDR_POSTINC(OFFSET_REG, OP_LDRSH, 16); }
+static INSN_REGPARM void arm09F(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_REG, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn], #offset
-static INSN_REGPARM void arm0DF(u32 opcode) { LDR_POSTINC(OFFSET_IMM8, OP_LDRSH, 16); }
+static INSN_REGPARM void arm0DF(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_IMM8, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, -Rm]
-static INSN_REGPARM void arm11F(u32 opcode) { LDR_PREDEC(OFFSET_REG, OP_LDRSH, 16); }
+static INSN_REGPARM void arm11F(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_REG, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, -Rm]!
-static INSN_REGPARM void arm13F(u32 opcode) { LDR_PREDEC_WB(OFFSET_REG, OP_LDRSH, 16); }
+static INSN_REGPARM void arm13F(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_REG, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, -#offset]
-static INSN_REGPARM void arm15F(u32 opcode) { LDR_PREDEC(OFFSET_IMM8, OP_LDRSH, 16); }
+static INSN_REGPARM void arm15F(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_IMM8, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, -#offset]!
-static INSN_REGPARM void arm17F(u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM8, OP_LDRSH, 16); }
+static INSN_REGPARM void arm17F(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM8, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, Rm]
-static INSN_REGPARM void arm19F(u32 opcode) { LDR_PREINC(OFFSET_REG, OP_LDRSH, 16); }
+static INSN_REGPARM void arm19F(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_REG, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, Rm]!
-static INSN_REGPARM void arm1BF(u32 opcode) { LDR_PREINC_WB(OFFSET_REG, OP_LDRSH, 16); }
+static INSN_REGPARM void arm1BF(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_REG, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, #offset]
-static INSN_REGPARM void arm1DF(u32 opcode) { LDR_PREINC(OFFSET_IMM8, OP_LDRSH, 16); }
+static INSN_REGPARM void arm1DF(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_IMM8, OP_LDRSH, 16); }
 // LDRSH Rd, [Rn, #offset]!
-static INSN_REGPARM void arm1FF(u32 opcode) { LDR_PREINC_WB(OFFSET_IMM8, OP_LDRSH, 16); }
+static INSN_REGPARM void arm1FF(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_IMM8, OP_LDRSH, 16); }
 
 // STR[T] Rd, [Rn], -#
 // Note: STR and STRT do the same thing on the GBA (likewise for LDR/LDRT etc)
-static INSN_REGPARM void arm400(u32 opcode) { STR_POSTDEC(OFFSET_IMM, OP_STR, 32); }
+static INSN_REGPARM void arm400(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_IMM, OP_STR, 32); }
 // LDR[T] Rd, [Rn], -#
-static INSN_REGPARM void arm410(u32 opcode) { LDR_POSTDEC(OFFSET_IMM, OP_LDR, 32); }
+static INSN_REGPARM void arm410(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_IMM, OP_LDR, 32); }
 // STRB[T] Rd, [Rn], -#
-static INSN_REGPARM void arm440(u32 opcode) { STR_POSTDEC(OFFSET_IMM, OP_STRB, 16); }
+static INSN_REGPARM void arm440(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_IMM, OP_STRB, 16); }
 // LDRB[T] Rd, [Rn], -#
-static INSN_REGPARM void arm450(u32 opcode) { LDR_POSTDEC(OFFSET_IMM, OP_LDRB, 16); }
+static INSN_REGPARM void arm450(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_IMM, OP_LDRB, 16); }
 // STR[T] Rd, [Rn], #
-static INSN_REGPARM void arm480(u32 opcode) { STR_POSTINC(OFFSET_IMM, OP_STR, 32); }
+static INSN_REGPARM void arm480(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_IMM, OP_STR, 32); }
 // LDR Rd, [Rn], #
-static INSN_REGPARM void arm490(u32 opcode) { LDR_POSTINC(OFFSET_IMM, OP_LDR, 32); }
+static INSN_REGPARM void arm490(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_IMM, OP_LDR, 32); }
 // STRB[T] Rd, [Rn], #
-static INSN_REGPARM void arm4C0(u32 opcode) { STR_POSTINC(OFFSET_IMM, OP_STRB, 16); }
+static INSN_REGPARM void arm4C0(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_IMM, OP_STRB, 16); }
 // LDRB[T] Rd, [Rn], #
-static INSN_REGPARM void arm4D0(u32 opcode) { LDR_POSTINC(OFFSET_IMM, OP_LDRB, 16); }
+static INSN_REGPARM void arm4D0(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_IMM, OP_LDRB, 16); }
 // STR Rd, [Rn, -#]
-static INSN_REGPARM void arm500(u32 opcode) { STR_PREDEC(OFFSET_IMM, OP_STR, 32); }
+static INSN_REGPARM void arm500(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_IMM, OP_STR, 32); }
 // LDR Rd, [Rn, -#]
-static INSN_REGPARM void arm510(u32 opcode) { LDR_PREDEC(OFFSET_IMM, OP_LDR, 32); }
+static INSN_REGPARM void arm510(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_IMM, OP_LDR, 32); }
 // STR Rd, [Rn, -#]!
-static INSN_REGPARM void arm520(u32 opcode) { STR_PREDEC_WB(OFFSET_IMM, OP_STR, 32); }
+static INSN_REGPARM void arm520(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_IMM, OP_STR, 32); }
 // LDR Rd, [Rn, -#]!
-static INSN_REGPARM void arm530(u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM, OP_LDR, 32); }
+static INSN_REGPARM void arm530(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM, OP_LDR, 32); }
 // STRB Rd, [Rn, -#]
-static INSN_REGPARM void arm540(u32 opcode) { STR_PREDEC(OFFSET_IMM, OP_STRB, 16); }
+static INSN_REGPARM void arm540(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_IMM, OP_STRB, 16); }
 // LDRB Rd, [Rn, -#]
-static INSN_REGPARM void arm550(u32 opcode) { LDR_PREDEC(OFFSET_IMM, OP_LDRB, 16); }
+static INSN_REGPARM void arm550(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_IMM, OP_LDRB, 16); }
 // STRB Rd, [Rn, -#]!
-static INSN_REGPARM void arm560(u32 opcode) { STR_PREDEC_WB(OFFSET_IMM, OP_STRB, 16); }
+static INSN_REGPARM void arm560(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_IMM, OP_STRB, 16); }
 // LDRB Rd, [Rn, -#]!
-static INSN_REGPARM void arm570(u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM, OP_LDRB, 16); }
+static INSN_REGPARM void arm570(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_IMM, OP_LDRB, 16); }
 // STR Rd, [Rn, #]
-static INSN_REGPARM void arm580(u32 opcode) { STR_PREINC(OFFSET_IMM, OP_STR, 32); }
+static INSN_REGPARM void arm580(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_IMM, OP_STR, 32); }
 // LDR Rd, [Rn, #]
-static INSN_REGPARM void arm590(u32 opcode) { LDR_PREINC(OFFSET_IMM, OP_LDR, 32); }
+static INSN_REGPARM void arm590(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_IMM, OP_LDR, 32); }
 // STR Rd, [Rn, #]!
-static INSN_REGPARM void arm5A0(u32 opcode) { STR_PREINC_WB(OFFSET_IMM, OP_STR, 32); }
+static INSN_REGPARM void arm5A0(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_IMM, OP_STR, 32); }
 // LDR Rd, [Rn, #]!
-static INSN_REGPARM void arm5B0(u32 opcode) { LDR_PREINC_WB(OFFSET_IMM, OP_LDR, 32); }
+static INSN_REGPARM void arm5B0(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_IMM, OP_LDR, 32); }
 // STRB Rd, [Rn, #]
-static INSN_REGPARM void arm5C0(u32 opcode) { STR_PREINC(OFFSET_IMM, OP_STRB, 16); }
+static INSN_REGPARM void arm5C0(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_IMM, OP_STRB, 16); }
 // LDRB Rd, [Rn, #]
-static INSN_REGPARM void arm5D0(u32 opcode) { LDR_PREINC(OFFSET_IMM, OP_LDRB, 16); }
+static INSN_REGPARM void arm5D0(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_IMM, OP_LDRB, 16); }
 // STRB Rd, [Rn, #]!
-static INSN_REGPARM void arm5E0(u32 opcode) { STR_PREINC_WB(OFFSET_IMM, OP_STRB, 16); }
+static INSN_REGPARM void arm5E0(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_IMM, OP_STRB, 16); }
 // LDRB Rd, [Rn, #]!
-static INSN_REGPARM void arm5F0(u32 opcode) { LDR_PREINC_WB(OFFSET_IMM, OP_LDRB, 16); }
+static INSN_REGPARM void arm5F0(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_IMM, OP_LDRB, 16); }
 
 // STR[T] Rd, [Rn], -Rm, LSL #
-static INSN_REGPARM void arm600(u32 opcode) { STR_POSTDEC(OFFSET_LSL, OP_STR, 32); }
+static INSN_REGPARM void arm600(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_LSL, OP_STR, 32); }
 // STR[T] Rd, [Rn], -Rm, LSR #
-static INSN_REGPARM void arm602(u32 opcode) { STR_POSTDEC(OFFSET_LSR, OP_STR, 32); }
+static INSN_REGPARM void arm602(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_LSR, OP_STR, 32); }
 // STR[T] Rd, [Rn], -Rm, ASR #
-static INSN_REGPARM void arm604(u32 opcode) { STR_POSTDEC(OFFSET_ASR, OP_STR, 32); }
+static INSN_REGPARM void arm604(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_ASR, OP_STR, 32); }
 // STR[T] Rd, [Rn], -Rm, ROR #
-static INSN_REGPARM void arm606(u32 opcode) { STR_POSTDEC(OFFSET_ROR, OP_STR, 32); }
+static INSN_REGPARM void arm606(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_ROR, OP_STR, 32); }
 // LDR[T] Rd, [Rn], -Rm, LSL #
-static INSN_REGPARM void arm610(u32 opcode) { LDR_POSTDEC(OFFSET_LSL, OP_LDR, 32); }
+static INSN_REGPARM void arm610(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_LSL, OP_LDR, 32); }
 // LDR[T] Rd, [Rn], -Rm, LSR #
-static INSN_REGPARM void arm612(u32 opcode) { LDR_POSTDEC(OFFSET_LSR, OP_LDR, 32); }
+static INSN_REGPARM void arm612(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_LSR, OP_LDR, 32); }
 // LDR[T] Rd, [Rn], -Rm, ASR #
-static INSN_REGPARM void arm614(u32 opcode) { LDR_POSTDEC(OFFSET_ASR, OP_LDR, 32); }
+static INSN_REGPARM void arm614(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_ASR, OP_LDR, 32); }
 // LDR[T] Rd, [Rn], -Rm, ROR #
-static INSN_REGPARM void arm616(u32 opcode) { LDR_POSTDEC(OFFSET_ROR, OP_LDR, 32); }
+static INSN_REGPARM void arm616(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_ROR, OP_LDR, 32); }
 // STRB[T] Rd, [Rn], -Rm, LSL #
-static INSN_REGPARM void arm640(u32 opcode) { STR_POSTDEC(OFFSET_LSL, OP_STRB, 16); }
+static INSN_REGPARM void arm640(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_LSL, OP_STRB, 16); }
 // STRB[T] Rd, [Rn], -Rm, LSR #
-static INSN_REGPARM void arm642(u32 opcode) { STR_POSTDEC(OFFSET_LSR, OP_STRB, 16); }
+static INSN_REGPARM void arm642(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_LSR, OP_STRB, 16); }
 // STRB[T] Rd, [Rn], -Rm, ASR #
-static INSN_REGPARM void arm644(u32 opcode) { STR_POSTDEC(OFFSET_ASR, OP_STRB, 16); }
+static INSN_REGPARM void arm644(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_ASR, OP_STRB, 16); }
 // STRB[T] Rd, [Rn], -Rm, ROR #
-static INSN_REGPARM void arm646(u32 opcode) { STR_POSTDEC(OFFSET_ROR, OP_STRB, 16); }
+static INSN_REGPARM void arm646(GBASystem *gba, u32 opcode) { STR_POSTDEC(OFFSET_ROR, OP_STRB, 16); }
 // LDRB[T] Rd, [Rn], -Rm, LSL #
-static INSN_REGPARM void arm650(u32 opcode) { LDR_POSTDEC(OFFSET_LSL, OP_LDRB, 16); }
+static INSN_REGPARM void arm650(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_LSL, OP_LDRB, 16); }
 // LDRB[T] Rd, [Rn], -Rm, LSR #
-static INSN_REGPARM void arm652(u32 opcode) { LDR_POSTDEC(OFFSET_LSR, OP_LDRB, 16); }
+static INSN_REGPARM void arm652(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_LSR, OP_LDRB, 16); }
 // LDRB[T] Rd, [Rn], -Rm, ASR #
-static INSN_REGPARM void arm654(u32 opcode) { LDR_POSTDEC(OFFSET_ASR, OP_LDRB, 16); }
+static INSN_REGPARM void arm654(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_ASR, OP_LDRB, 16); }
 // LDRB Rd, [Rn], -Rm, ROR #
-static INSN_REGPARM void arm656(u32 opcode) { LDR_POSTDEC(OFFSET_ROR, OP_LDRB, 16); }
+static INSN_REGPARM void arm656(GBASystem *gba, u32 opcode) { LDR_POSTDEC(OFFSET_ROR, OP_LDRB, 16); }
 // STR[T] Rd, [Rn], Rm, LSL #
-static INSN_REGPARM void arm680(u32 opcode) { STR_POSTINC(OFFSET_LSL, OP_STR, 32); }
+static INSN_REGPARM void arm680(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_LSL, OP_STR, 32); }
 // STR[T] Rd, [Rn], Rm, LSR #
-static INSN_REGPARM void arm682(u32 opcode) { STR_POSTINC(OFFSET_LSR, OP_STR, 32); }
+static INSN_REGPARM void arm682(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_LSR, OP_STR, 32); }
 // STR[T] Rd, [Rn], Rm, ASR #
-static INSN_REGPARM void arm684(u32 opcode) { STR_POSTINC(OFFSET_ASR, OP_STR, 32); }
+static INSN_REGPARM void arm684(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_ASR, OP_STR, 32); }
 // STR[T] Rd, [Rn], Rm, ROR #
-static INSN_REGPARM void arm686(u32 opcode) { STR_POSTINC(OFFSET_ROR, OP_STR, 32); }
+static INSN_REGPARM void arm686(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_ROR, OP_STR, 32); }
 // LDR[T] Rd, [Rn], Rm, LSL #
-static INSN_REGPARM void arm690(u32 opcode) { LDR_POSTINC(OFFSET_LSL, OP_LDR, 32); }
+static INSN_REGPARM void arm690(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_LSL, OP_LDR, 32); }
 // LDR[T] Rd, [Rn], Rm, LSR #
-static INSN_REGPARM void arm692(u32 opcode) { LDR_POSTINC(OFFSET_LSR, OP_LDR, 32); }
+static INSN_REGPARM void arm692(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_LSR, OP_LDR, 32); }
 // LDR[T] Rd, [Rn], Rm, ASR #
-static INSN_REGPARM void arm694(u32 opcode) { LDR_POSTINC(OFFSET_ASR, OP_LDR, 32); }
+static INSN_REGPARM void arm694(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_ASR, OP_LDR, 32); }
 // LDR[T] Rd, [Rn], Rm, ROR #
-static INSN_REGPARM void arm696(u32 opcode) { LDR_POSTINC(OFFSET_ROR, OP_LDR, 32); }
+static INSN_REGPARM void arm696(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_ROR, OP_LDR, 32); }
 // STRB[T] Rd, [Rn], Rm, LSL #
-static INSN_REGPARM void arm6C0(u32 opcode) { STR_POSTINC(OFFSET_LSL, OP_STRB, 16); }
+static INSN_REGPARM void arm6C0(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_LSL, OP_STRB, 16); }
 // STRB[T] Rd, [Rn], Rm, LSR #
-static INSN_REGPARM void arm6C2(u32 opcode) { STR_POSTINC(OFFSET_LSR, OP_STRB, 16); }
+static INSN_REGPARM void arm6C2(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_LSR, OP_STRB, 16); }
 // STRB[T] Rd, [Rn], Rm, ASR #
-static INSN_REGPARM void arm6C4(u32 opcode) { STR_POSTINC(OFFSET_ASR, OP_STRB, 16); }
+static INSN_REGPARM void arm6C4(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_ASR, OP_STRB, 16); }
 // STRB[T] Rd, [Rn], Rm, ROR #
-static INSN_REGPARM void arm6C6(u32 opcode) { STR_POSTINC(OFFSET_ROR, OP_STRB, 16); }
+static INSN_REGPARM void arm6C6(GBASystem *gba, u32 opcode) { STR_POSTINC(OFFSET_ROR, OP_STRB, 16); }
 // LDRB[T] Rd, [Rn], Rm, LSL #
-static INSN_REGPARM void arm6D0(u32 opcode) { LDR_POSTINC(OFFSET_LSL, OP_LDRB, 16); }
+static INSN_REGPARM void arm6D0(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_LSL, OP_LDRB, 16); }
 // LDRB[T] Rd, [Rn], Rm, LSR #
-static INSN_REGPARM void arm6D2(u32 opcode) { LDR_POSTINC(OFFSET_LSR, OP_LDRB, 16); }
+static INSN_REGPARM void arm6D2(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_LSR, OP_LDRB, 16); }
 // LDRB[T] Rd, [Rn], Rm, ASR #
-static INSN_REGPARM void arm6D4(u32 opcode) { LDR_POSTINC(OFFSET_ASR, OP_LDRB, 16); }
+static INSN_REGPARM void arm6D4(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_ASR, OP_LDRB, 16); }
 // LDRB[T] Rd, [Rn], Rm, ROR #
-static INSN_REGPARM void arm6D6(u32 opcode) { LDR_POSTINC(OFFSET_ROR, OP_LDRB, 16); }
+static INSN_REGPARM void arm6D6(GBASystem *gba, u32 opcode) { LDR_POSTINC(OFFSET_ROR, OP_LDRB, 16); }
 // STR Rd, [Rn, -Rm, LSL #]
-static INSN_REGPARM void arm700(u32 opcode) { STR_PREDEC(OFFSET_LSL, OP_STR, 32); }
+static INSN_REGPARM void arm700(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_LSL, OP_STR, 32); }
 // STR Rd, [Rn, -Rm, LSR #]
-static INSN_REGPARM void arm702(u32 opcode) { STR_PREDEC(OFFSET_LSR, OP_STR, 32); }
+static INSN_REGPARM void arm702(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_LSR, OP_STR, 32); }
 // STR Rd, [Rn, -Rm, ASR #]
-static INSN_REGPARM void arm704(u32 opcode) { STR_PREDEC(OFFSET_ASR, OP_STR, 32); }
+static INSN_REGPARM void arm704(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_ASR, OP_STR, 32); }
 // STR Rd, [Rn, -Rm, ROR #]
-static INSN_REGPARM void arm706(u32 opcode) { STR_PREDEC(OFFSET_ROR, OP_STR, 32); }
+static INSN_REGPARM void arm706(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_ROR, OP_STR, 32); }
 // LDR Rd, [Rn, -Rm, LSL #]
-static INSN_REGPARM void arm710(u32 opcode) { LDR_PREDEC(OFFSET_LSL, OP_LDR, 32); }
+static INSN_REGPARM void arm710(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_LSL, OP_LDR, 32); }
 // LDR Rd, [Rn, -Rm, LSR #]
-static INSN_REGPARM void arm712(u32 opcode) { LDR_PREDEC(OFFSET_LSR, OP_LDR, 32); }
+static INSN_REGPARM void arm712(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_LSR, OP_LDR, 32); }
 // LDR Rd, [Rn, -Rm, ASR #]
-static INSN_REGPARM void arm714(u32 opcode) { LDR_PREDEC(OFFSET_ASR, OP_LDR, 32); }
+static INSN_REGPARM void arm714(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_ASR, OP_LDR, 32); }
 // LDR Rd, [Rn, -Rm, ROR #]
-static INSN_REGPARM void arm716(u32 opcode) { LDR_PREDEC(OFFSET_ROR, OP_LDR, 32); }
+static INSN_REGPARM void arm716(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_ROR, OP_LDR, 32); }
 // STR Rd, [Rn, -Rm, LSL #]!
-static INSN_REGPARM void arm720(u32 opcode) { STR_PREDEC_WB(OFFSET_LSL, OP_STR, 32); }
+static INSN_REGPARM void arm720(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_LSL, OP_STR, 32); }
 // STR Rd, [Rn, -Rm, LSR #]!
-static INSN_REGPARM void arm722(u32 opcode) { STR_PREDEC_WB(OFFSET_LSR, OP_STR, 32); }
+static INSN_REGPARM void arm722(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_LSR, OP_STR, 32); }
 // STR Rd, [Rn, -Rm, ASR #]!
-static INSN_REGPARM void arm724(u32 opcode) { STR_PREDEC_WB(OFFSET_ASR, OP_STR, 32); }
+static INSN_REGPARM void arm724(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_ASR, OP_STR, 32); }
 // STR Rd, [Rn, -Rm, ROR #]!
-static INSN_REGPARM void arm726(u32 opcode) { STR_PREDEC_WB(OFFSET_ROR, OP_STR, 32); }
+static INSN_REGPARM void arm726(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_ROR, OP_STR, 32); }
 // LDR Rd, [Rn, -Rm, LSL #]!
-static INSN_REGPARM void arm730(u32 opcode) { LDR_PREDEC_WB(OFFSET_LSL, OP_LDR, 32); }
+static INSN_REGPARM void arm730(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_LSL, OP_LDR, 32); }
 // LDR Rd, [Rn, -Rm, LSR #]!
-static INSN_REGPARM void arm732(u32 opcode) { LDR_PREDEC_WB(OFFSET_LSR, OP_LDR, 32); }
+static INSN_REGPARM void arm732(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_LSR, OP_LDR, 32); }
 // LDR Rd, [Rn, -Rm, ASR #]!
-static INSN_REGPARM void arm734(u32 opcode) { LDR_PREDEC_WB(OFFSET_ASR, OP_LDR, 32); }
+static INSN_REGPARM void arm734(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_ASR, OP_LDR, 32); }
 // LDR Rd, [Rn, -Rm, ROR #]!
-static INSN_REGPARM void arm736(u32 opcode) { LDR_PREDEC_WB(OFFSET_ROR, OP_LDR, 32); }
+static INSN_REGPARM void arm736(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_ROR, OP_LDR, 32); }
 // STRB Rd, [Rn, -Rm, LSL #]
-static INSN_REGPARM void arm740(u32 opcode) { STR_PREDEC(OFFSET_LSL, OP_STRB, 16); }
+static INSN_REGPARM void arm740(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_LSL, OP_STRB, 16); }
 // STRB Rd, [Rn, -Rm, LSR #]
-static INSN_REGPARM void arm742(u32 opcode) { STR_PREDEC(OFFSET_LSR, OP_STRB, 16); }
+static INSN_REGPARM void arm742(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_LSR, OP_STRB, 16); }
 // STRB Rd, [Rn, -Rm, ASR #]
-static INSN_REGPARM void arm744(u32 opcode) { STR_PREDEC(OFFSET_ASR, OP_STRB, 16); }
+static INSN_REGPARM void arm744(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_ASR, OP_STRB, 16); }
 // STRB Rd, [Rn, -Rm, ROR #]
-static INSN_REGPARM void arm746(u32 opcode) { STR_PREDEC(OFFSET_ROR, OP_STRB, 16); }
+static INSN_REGPARM void arm746(GBASystem *gba, u32 opcode) { STR_PREDEC(OFFSET_ROR, OP_STRB, 16); }
 // LDRB Rd, [Rn, -Rm, LSL #]
-static INSN_REGPARM void arm750(u32 opcode) { LDR_PREDEC(OFFSET_LSL, OP_LDRB, 16); }
+static INSN_REGPARM void arm750(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_LSL, OP_LDRB, 16); }
 // LDRB Rd, [Rn, -Rm, LSR #]
-static INSN_REGPARM void arm752(u32 opcode) { LDR_PREDEC(OFFSET_LSR, OP_LDRB, 16); }
+static INSN_REGPARM void arm752(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_LSR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, -Rm, ASR #]
-static INSN_REGPARM void arm754(u32 opcode) { LDR_PREDEC(OFFSET_ASR, OP_LDRB, 16); }
+static INSN_REGPARM void arm754(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_ASR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, -Rm, ROR #]
-static INSN_REGPARM void arm756(u32 opcode) { LDR_PREDEC(OFFSET_ROR, OP_LDRB, 16); }
+static INSN_REGPARM void arm756(GBASystem *gba, u32 opcode) { LDR_PREDEC(OFFSET_ROR, OP_LDRB, 16); }
 // STRB Rd, [Rn, -Rm, LSL #]!
-static INSN_REGPARM void arm760(u32 opcode) { STR_PREDEC_WB(OFFSET_LSL, OP_STRB, 16); }
+static INSN_REGPARM void arm760(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_LSL, OP_STRB, 16); }
 // STRB Rd, [Rn, -Rm, LSR #]!
-static INSN_REGPARM void arm762(u32 opcode) { STR_PREDEC_WB(OFFSET_LSR, OP_STRB, 16); }
+static INSN_REGPARM void arm762(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_LSR, OP_STRB, 16); }
 // STRB Rd, [Rn, -Rm, ASR #]!
-static INSN_REGPARM void arm764(u32 opcode) { STR_PREDEC_WB(OFFSET_ASR, OP_STRB, 16); }
+static INSN_REGPARM void arm764(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_ASR, OP_STRB, 16); }
 // STRB Rd, [Rn, -Rm, ROR #]!
-static INSN_REGPARM void arm766(u32 opcode) { STR_PREDEC_WB(OFFSET_ROR, OP_STRB, 16); }
+static INSN_REGPARM void arm766(GBASystem *gba, u32 opcode) { STR_PREDEC_WB(OFFSET_ROR, OP_STRB, 16); }
 // LDRB Rd, [Rn, -Rm, LSL #]!
-static INSN_REGPARM void arm770(u32 opcode) { LDR_PREDEC_WB(OFFSET_LSL, OP_LDRB, 16); }
+static INSN_REGPARM void arm770(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_LSL, OP_LDRB, 16); }
 // LDRB Rd, [Rn, -Rm, LSR #]!
-static INSN_REGPARM void arm772(u32 opcode) { LDR_PREDEC_WB(OFFSET_LSR, OP_LDRB, 16); }
+static INSN_REGPARM void arm772(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_LSR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, -Rm, ASR #]!
-static INSN_REGPARM void arm774(u32 opcode) { LDR_PREDEC_WB(OFFSET_ASR, OP_LDRB, 16); }
+static INSN_REGPARM void arm774(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_ASR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, -Rm, ROR #]!
-static INSN_REGPARM void arm776(u32 opcode) { LDR_PREDEC_WB(OFFSET_ROR, OP_LDRB, 16); }
+static INSN_REGPARM void arm776(GBASystem *gba, u32 opcode) { LDR_PREDEC_WB(OFFSET_ROR, OP_LDRB, 16); }
 // STR Rd, [Rn, Rm, LSL #]
-static INSN_REGPARM void arm780(u32 opcode) { STR_PREINC(OFFSET_LSL, OP_STR, 32); }
+static INSN_REGPARM void arm780(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_LSL, OP_STR, 32); }
 // STR Rd, [Rn, Rm, LSR #]
-static INSN_REGPARM void arm782(u32 opcode) { STR_PREINC(OFFSET_LSR, OP_STR, 32); }
+static INSN_REGPARM void arm782(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_LSR, OP_STR, 32); }
 // STR Rd, [Rn, Rm, ASR #]
-static INSN_REGPARM void arm784(u32 opcode) { STR_PREINC(OFFSET_ASR, OP_STR, 32); }
+static INSN_REGPARM void arm784(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_ASR, OP_STR, 32); }
 // STR Rd, [Rn, Rm, ROR #]
-static INSN_REGPARM void arm786(u32 opcode) { STR_PREINC(OFFSET_ROR, OP_STR, 32); }
+static INSN_REGPARM void arm786(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_ROR, OP_STR, 32); }
 // LDR Rd, [Rn, Rm, LSL #]
-static INSN_REGPARM void arm790(u32 opcode) { LDR_PREINC(OFFSET_LSL, OP_LDR, 32); }
+static INSN_REGPARM void arm790(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_LSL, OP_LDR, 32); }
 // LDR Rd, [Rn, Rm, LSR #]
-static INSN_REGPARM void arm792(u32 opcode) { LDR_PREINC(OFFSET_LSR, OP_LDR, 32); }
+static INSN_REGPARM void arm792(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_LSR, OP_LDR, 32); }
 // LDR Rd, [Rn, Rm, ASR #]
-static INSN_REGPARM void arm794(u32 opcode) { LDR_PREINC(OFFSET_ASR, OP_LDR, 32); }
+static INSN_REGPARM void arm794(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_ASR, OP_LDR, 32); }
 // LDR Rd, [Rn, Rm, ROR #]
-static INSN_REGPARM void arm796(u32 opcode) { LDR_PREINC(OFFSET_ROR, OP_LDR, 32); }
+static INSN_REGPARM void arm796(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_ROR, OP_LDR, 32); }
 // STR Rd, [Rn, Rm, LSL #]!
-static INSN_REGPARM void arm7A0(u32 opcode) { STR_PREINC_WB(OFFSET_LSL, OP_STR, 32); }
+static INSN_REGPARM void arm7A0(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_LSL, OP_STR, 32); }
 // STR Rd, [Rn, Rm, LSR #]!
-static INSN_REGPARM void arm7A2(u32 opcode) { STR_PREINC_WB(OFFSET_LSR, OP_STR, 32); }
+static INSN_REGPARM void arm7A2(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_LSR, OP_STR, 32); }
 // STR Rd, [Rn, Rm, ASR #]!
-static INSN_REGPARM void arm7A4(u32 opcode) { STR_PREINC_WB(OFFSET_ASR, OP_STR, 32); }
+static INSN_REGPARM void arm7A4(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_ASR, OP_STR, 32); }
 // STR Rd, [Rn, Rm, ROR #]!
-static INSN_REGPARM void arm7A6(u32 opcode) { STR_PREINC_WB(OFFSET_ROR, OP_STR, 32); }
+static INSN_REGPARM void arm7A6(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_ROR, OP_STR, 32); }
 // LDR Rd, [Rn, Rm, LSL #]!
-static INSN_REGPARM void arm7B0(u32 opcode) { LDR_PREINC_WB(OFFSET_LSL, OP_LDR, 32); }
+static INSN_REGPARM void arm7B0(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_LSL, OP_LDR, 32); }
 // LDR Rd, [Rn, Rm, LSR #]!
-static INSN_REGPARM void arm7B2(u32 opcode) { LDR_PREINC_WB(OFFSET_LSR, OP_LDR, 32); }
+static INSN_REGPARM void arm7B2(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_LSR, OP_LDR, 32); }
 // LDR Rd, [Rn, Rm, ASR #]!
-static INSN_REGPARM void arm7B4(u32 opcode) { LDR_PREINC_WB(OFFSET_ASR, OP_LDR, 32); }
+static INSN_REGPARM void arm7B4(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_ASR, OP_LDR, 32); }
 // LDR Rd, [Rn, Rm, ROR #]!
-static INSN_REGPARM void arm7B6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDR, 32); }
+static INSN_REGPARM void arm7B6(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDR, 32); }
 // STRB Rd, [Rn, Rm, LSL #]
-static INSN_REGPARM void arm7C0(u32 opcode) { STR_PREINC(OFFSET_LSL, OP_STRB, 16); }
+static INSN_REGPARM void arm7C0(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_LSL, OP_STRB, 16); }
 // STRB Rd, [Rn, Rm, LSR #]
-static INSN_REGPARM void arm7C2(u32 opcode) { STR_PREINC(OFFSET_LSR, OP_STRB, 16); }
+static INSN_REGPARM void arm7C2(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_LSR, OP_STRB, 16); }
 // STRB Rd, [Rn, Rm, ASR #]
-static INSN_REGPARM void arm7C4(u32 opcode) { STR_PREINC(OFFSET_ASR, OP_STRB, 16); }
+static INSN_REGPARM void arm7C4(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_ASR, OP_STRB, 16); }
 // STRB Rd, [Rn, Rm, ROR #]
-static INSN_REGPARM void arm7C6(u32 opcode) { STR_PREINC(OFFSET_ROR, OP_STRB, 16); }
+static INSN_REGPARM void arm7C6(GBASystem *gba, u32 opcode) { STR_PREINC(OFFSET_ROR, OP_STRB, 16); }
 // LDRB Rd, [Rn, Rm, LSL #]
-static INSN_REGPARM void arm7D0(u32 opcode) { LDR_PREINC(OFFSET_LSL, OP_LDRB, 16); }
+static INSN_REGPARM void arm7D0(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_LSL, OP_LDRB, 16); }
 // LDRB Rd, [Rn, Rm, LSR #]
-static INSN_REGPARM void arm7D2(u32 opcode) { LDR_PREINC(OFFSET_LSR, OP_LDRB, 16); }
+static INSN_REGPARM void arm7D2(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_LSR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, Rm, ASR #]
-static INSN_REGPARM void arm7D4(u32 opcode) { LDR_PREINC(OFFSET_ASR, OP_LDRB, 16); }
+static INSN_REGPARM void arm7D4(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_ASR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, Rm, ROR #]
-static INSN_REGPARM void arm7D6(u32 opcode) { LDR_PREINC(OFFSET_ROR, OP_LDRB, 16); }
+static INSN_REGPARM void arm7D6(GBASystem *gba, u32 opcode) { LDR_PREINC(OFFSET_ROR, OP_LDRB, 16); }
 // STRB Rd, [Rn, Rm, LSL #]!
-static INSN_REGPARM void arm7E0(u32 opcode) { STR_PREINC_WB(OFFSET_LSL, OP_STRB, 16); }
+static INSN_REGPARM void arm7E0(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_LSL, OP_STRB, 16); }
 // STRB Rd, [Rn, Rm, LSR #]!
-static INSN_REGPARM void arm7E2(u32 opcode) { STR_PREINC_WB(OFFSET_LSR, OP_STRB, 16); }
+static INSN_REGPARM void arm7E2(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_LSR, OP_STRB, 16); }
 // STRB Rd, [Rn, Rm, ASR #]!
-static INSN_REGPARM void arm7E4(u32 opcode) { STR_PREINC_WB(OFFSET_ASR, OP_STRB, 16); }
+static INSN_REGPARM void arm7E4(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_ASR, OP_STRB, 16); }
 // STRB Rd, [Rn, Rm, ROR #]!
-static INSN_REGPARM void arm7E6(u32 opcode) { STR_PREINC_WB(OFFSET_ROR, OP_STRB, 16); }
+static INSN_REGPARM void arm7E6(GBASystem *gba, u32 opcode) { STR_PREINC_WB(OFFSET_ROR, OP_STRB, 16); }
 // LDRB Rd, [Rn, Rm, LSL #]!
-static INSN_REGPARM void arm7F0(u32 opcode) { LDR_PREINC_WB(OFFSET_LSL, OP_LDRB, 16); }
+static INSN_REGPARM void arm7F0(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_LSL, OP_LDRB, 16); }
 // LDRB Rd, [Rn, Rm, LSR #]!
-static INSN_REGPARM void arm7F2(u32 opcode) { LDR_PREINC_WB(OFFSET_LSR, OP_LDRB, 16); }
+static INSN_REGPARM void arm7F2(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_LSR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, Rm, ASR #]!
-static INSN_REGPARM void arm7F4(u32 opcode) { LDR_PREINC_WB(OFFSET_ASR, OP_LDRB, 16); }
+static INSN_REGPARM void arm7F4(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_ASR, OP_LDRB, 16); }
 // LDRB Rd, [Rn, Rm, ROR #]!
-static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB, 16); }
+static INSN_REGPARM void arm7F6(GBASystem *gba, u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB, 16); }
 
 // STM/LDM ////////////////////////////////////////////////////////////////
 
 #define STM_REG(bit,num) \
     if (opcode & (1U<<(bit))) {                         \
-        CPUWriteMemory(address, reg[(num)].I);          \
+        CPUWriteMemory(gba, address, gba->reg[(num)].I);          \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address);\
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address);\
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address);\
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address);\
         }                                               \
         count++;                                        \
         address += 4;                                   \
     }
 #define STMW_REG(bit,num) \
     if (opcode & (1U<<(bit))) {                         \
-        CPUWriteMemory(address, reg[(num)].I);          \
+        CPUWriteMemory(gba, address, gba->reg[(num)].I);          \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address);\
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address);\
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address);\
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address);\
         }                                               \
-        reg[base].I = temp;                             \
+        gba->reg[base].I = temp;                             \
         count++;                                        \
         address += 4;                                   \
     }
 #define LDM_REG(bit,num) \
     if (opcode & (1U<<(bit))) {                         \
-        reg[(num)].I = CPUReadMemory(address);          \
+        gba->reg[(num)].I = CPUReadMemory(gba, address);          \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address);\
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address);\
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address);\
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address);\
         }                                               \
         count++;                                        \
         address += 4;                                   \
@@ -1992,7 +1331,7 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
     STORE_REG(13, 13);                                  \
     STORE_REG(14, 14);
 #define STM_HIGH_2(STORE_REG) \
-    if (armMode == 0x11) {                              \
+    if (gba->armMode == 0x11) {                              \
         STORE_REG(8, R8_FIQ);                           \
         STORE_REG(9, R9_FIQ);                           \
         STORE_REG(10, R10_FIQ);                         \
@@ -2005,7 +1344,7 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
         STORE_REG(11, 11);                              \
         STORE_REG(12, 12);                              \
     }                                                   \
-    if (armMode != 0x10 && armMode != 0x1F) {           \
+    if (gba->armMode != 0x10 && gba->armMode != 0x1F) {           \
         STORE_REG(13, R13_USR);                         \
         STORE_REG(14, R14_USR);                         \
     } else {                                            \
@@ -2014,23 +1353,23 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
     }
 #define STM_PC \
     if (opcode & (1U<<15)) {                            \
-        CPUWriteMemory(address, reg[15].I+4);           \
+        CPUWriteMemory(gba, address, gba->reg[15].I+4);           \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address);\
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address);\
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address);\
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address);\
         }                                               \
         count++;                                        \
     }
 #define STMW_PC \
     if (opcode & (1U<<15)) {                            \
-        CPUWriteMemory(address, reg[15].I+4);           \
+        CPUWriteMemory(gba, address, gba->reg[15].I+4);           \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address);\
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address);\
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address);\
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address);\
         }                                               \
-        reg[base].I = temp;                             \
+        gba->reg[base].I = temp;                             \
         count++;                                        \
     }
 #define LDM_LOW \
@@ -2051,7 +1390,7 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
     LDM_REG(13, 13);                                    \
     LDM_REG(14, 14);
 #define LDM_HIGH_2 \
-    if (armMode == 0x11) {                              \
+    if (gba->armMode == 0x11) {                              \
         LDM_REG(8, R8_FIQ);                             \
         LDM_REG(9, R9_FIQ);                             \
         LDM_REG(10, R10_FIQ);                           \
@@ -2064,7 +1403,7 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
         LDM_REG(11, 11);                                \
         LDM_REG(12, 12);                                \
     }                                                   \
-    if (armMode != 0x10 && armMode != 0x1F) {           \
+    if (gba->armMode != 0x10 && gba->armMode != 0x1F) {           \
         LDM_REG(13, R13_USR);                           \
         LDM_REG(14, R14_USR);                           \
     } else {                                            \
@@ -2083,19 +1422,19 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
     LDM_LOW;                                            \
     LDM_HIGH;                                           \
     if (opcode & (1U<<15)) {                            \
-        reg[15].I = CPUReadMemory(address);             \
+        gba->reg[15].I = CPUReadMemory(gba, address);             \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address);\
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address);\
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address);\
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address);\
         }                                               \
         count++;                                        \
     }                                                   \
     if (opcode & (1U<<15)) {                            \
-        armNextPC = reg[15].I;                          \
-        reg[15].I += 4;                                 \
+        gba->armNextPC = gba->reg[15].I;                          \
+        gba->reg[15].I += 4;                                 \
         ARM_PREFETCH;                                   \
-        clockTicks += 1 + codeTicksAccessSeq32(armNextPC);\
+        gba->clockTicks += 1 + codeTicksAccessSeq32(gba, gba->armNextPC);\
     }
 #define STM_ALL_2 \
     STM_LOW(STM_REG);                                   \
@@ -2109,11 +1448,11 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
     LDM_LOW;                                            \
     if (opcode & (1U<<15)) {                            \
         LDM_HIGH;                                       \
-        reg[15].I = CPUReadMemory(address);             \
+        gba->reg[15].I = CPUReadMemory(gba, address);             \
         if (!count) {                                   \
-            clockTicks += 1 + dataTicksAccess32(address); \
+            gba->clockTicks += 1 + dataTicksAccess32(gba, address); \
         } else {                                        \
-            clockTicks += 1 + dataTicksAccessSeq32(address); \
+            gba->clockTicks += 1 + dataTicksAccessSeq32(gba, address); \
         }                                               \
         count++;                                        \
     } else {                                            \
@@ -2121,535 +1460,528 @@ static INSN_REGPARM void arm7F6(u32 opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_LDRB,
     }
 #define LDM_ALL_2B \
     if (opcode & (1U<<15)) {                            \
-        CPUSwitchMode(reg[17].I & 0x1F, false);         \
-        if (armState) {                                 \
-            armNextPC = reg[15].I & 0xFFFFFFFC;         \
-            reg[15].I = armNextPC + 4;                  \
+        CPUSwitchMode(gba, gba->reg[17].I & 0x1F, false);         \
+        if (gba->armState) {                                 \
+            gba->armNextPC = gba->reg[15].I & 0xFFFFFFFC;         \
+            gba->reg[15].I = gba->armNextPC + 4;                  \
             ARM_PREFETCH;                               \
         } else {                                        \
-            armNextPC = reg[15].I & 0xFFFFFFFE;         \
-            reg[15].I = armNextPC + 2;                  \
+            gba->armNextPC = gba->reg[15].I & 0xFFFFFFFE;         \
+            gba->reg[15].I = gba->armNextPC + 2;                  \
             THUMB_PREFETCH;                             \
         }                                               \
-        clockTicks += 1 + codeTicksAccessSeq32(armNextPC);\
+        gba->clockTicks += 1 + codeTicksAccessSeq32(gba, gba->armNextPC);\
     }
 
 
 // STMDA Rn, {Rlist}
-static INSN_REGPARM void arm800(u32 opcode)
+static INSN_REGPARM void arm800(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp + 4) & 0xFFFFFFFC;
     int count = 0;
     STM_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDA Rn, {Rlist}
-static INSN_REGPARM void arm810(u32 opcode)
+static INSN_REGPARM void arm810(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp + 4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMDA Rn!, {Rlist}
-static INSN_REGPARM void arm820(u32 opcode)
+static INSN_REGPARM void arm820(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp+4) & 0xFFFFFFFC;
     int count = 0;
     STMW_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDA Rn!, {Rlist}
-static INSN_REGPARM void arm830(u32 opcode)
+static INSN_REGPARM void arm830(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp + 4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
 }
 
 // STMDA Rn, {Rlist}^
-static INSN_REGPARM void arm840(u32 opcode)
+static INSN_REGPARM void arm840(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp+4) & 0xFFFFFFFC;
     int count = 0;
     STM_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDA Rn, {Rlist}^
-static INSN_REGPARM void arm850(u32 opcode)
+static INSN_REGPARM void arm850(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp + 4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMDA Rn!, {Rlist}^
-static INSN_REGPARM void arm860(u32 opcode)
+static INSN_REGPARM void arm860(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp+4) & 0xFFFFFFFC;
     int count = 0;
     STMW_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDA Rn!, {Rlist}^
-static INSN_REGPARM void arm870(u32 opcode)
+static INSN_REGPARM void arm870(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = (temp + 4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMIA Rn, {Rlist}
-static INSN_REGPARM void arm880(u32 opcode)
+static INSN_REGPARM void arm880(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
     STM_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIA Rn, {Rlist}
-static INSN_REGPARM void arm890(u32 opcode)
+static INSN_REGPARM void arm890(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMIA Rn!, {Rlist}
-static INSN_REGPARM void arm8A0(u32 opcode)
+static INSN_REGPARM void arm8A0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 0xFF] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 0xFF] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     STMW_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIA Rn!, {Rlist}
-static INSN_REGPARM void arm8B0(u32 opcode)
+static INSN_REGPARM void arm8B0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
 }
 
 // STMIA Rn, {Rlist}^
-static INSN_REGPARM void arm8C0(u32 opcode)
+static INSN_REGPARM void arm8C0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
     STM_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIA Rn, {Rlist}^
-static INSN_REGPARM void arm8D0(u32 opcode)
+static INSN_REGPARM void arm8D0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMIA Rn!, {Rlist}^
-static INSN_REGPARM void arm8E0(u32 opcode)
+static INSN_REGPARM void arm8E0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 0xFF] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 0xFF] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     STMW_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIA Rn!, {Rlist}^
-static INSN_REGPARM void arm8F0(u32 opcode)
+static INSN_REGPARM void arm8F0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
-    u32 address = reg[base].I & 0xFFFFFFFC;
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
+    u32 address = gba->reg[base].I & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMDB Rn, {Rlist}
-static INSN_REGPARM void arm900(u32 opcode)
+static INSN_REGPARM void arm900(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     STM_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDB Rn, {Rlist}
-static INSN_REGPARM void arm910(u32 opcode)
+static INSN_REGPARM void arm910(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMDB Rn!, {Rlist}
-static INSN_REGPARM void arm920(u32 opcode)
+static INSN_REGPARM void arm920(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     STMW_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDB Rn!, {Rlist}
-static INSN_REGPARM void arm930(u32 opcode)
+static INSN_REGPARM void arm930(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
 }
 
 // STMDB Rn, {Rlist}^
-static INSN_REGPARM void arm940(u32 opcode)
+static INSN_REGPARM void arm940(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     STM_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDB Rn, {Rlist}^
-static INSN_REGPARM void arm950(u32 opcode)
+static INSN_REGPARM void arm950(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMDB Rn!, {Rlist}^
-static INSN_REGPARM void arm960(u32 opcode)
+static INSN_REGPARM void arm960(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     STMW_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMDB Rn!, {Rlist}^
-static INSN_REGPARM void arm970(u32 opcode)
+static INSN_REGPARM void arm970(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I -
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I -
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     u32 address = temp & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMIB Rn, {Rlist}
-static INSN_REGPARM void arm980(u32 opcode)
+static INSN_REGPARM void arm980(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
     STM_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIB Rn, {Rlist}
-static INSN_REGPARM void arm990(u32 opcode)
+static INSN_REGPARM void arm990(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMIB Rn!, {Rlist}
-static INSN_REGPARM void arm9A0(u32 opcode)
+static INSN_REGPARM void arm9A0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 0xFF] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 0xFF] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     STMW_ALL;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIB Rn!, {Rlist}
-static INSN_REGPARM void arm9B0(u32 opcode)
+static INSN_REGPARM void arm9B0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
 }
 
 // STMIB Rn, {Rlist}^
-static INSN_REGPARM void arm9C0(u32 opcode)
+static INSN_REGPARM void arm9C0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
     STM_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIB Rn, {Rlist}^
-static INSN_REGPARM void arm9D0(u32 opcode)
+static INSN_REGPARM void arm9D0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // STMIB Rn!, {Rlist}^
-static INSN_REGPARM void arm9E0(u32 opcode)
+static INSN_REGPARM void arm9E0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 0xFF] + cpuBitsSet[(opcode >> 8) & 255]);
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 0xFF] + gba->cpuBitsSet[(opcode >> 8) & 255]);
     STMW_ALL_2;
-    clockTicks += 1 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 1 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // LDMIB Rn!, {Rlist}^
-static INSN_REGPARM void arm9F0(u32 opcode)
+static INSN_REGPARM void arm9F0(GBASystem *gba, u32 opcode)
 {
-    if (busPrefetchCount == 0)
-        busPrefetch = busPrefetchEnable;
+    if (gba->busPrefetchCount == 0)
+        gba->busPrefetch = gba->busPrefetchEnable;
     int base = (opcode & 0x000F0000) >> 16;
-    u32 temp = reg[base].I +
-        4 * (cpuBitsSet[opcode & 255] + cpuBitsSet[(opcode >> 8) & 255]);
-    u32 address = (reg[base].I+4) & 0xFFFFFFFC;
+    u32 temp = gba->reg[base].I +
+        4 * (gba->cpuBitsSet[opcode & 255] + gba->cpuBitsSet[(opcode >> 8) & 255]);
+    u32 address = (gba->reg[base].I+4) & 0xFFFFFFFC;
     int count = 0;
     LDM_ALL_2;
     if (!(opcode & (1U << base)))
-        reg[base].I = temp;
+        gba->reg[base].I = temp;
     LDM_ALL_2B;
-    clockTicks += 2 + codeTicksAccess32(armNextPC);
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC);
 }
 
 // B/BL/SWI and (unimplemented) coproc support ////////////////////////////
 
 // B <offset>
-static INSN_REGPARM void armA00(u32 opcode)
+static INSN_REGPARM void armA00(GBASystem *gba, u32 opcode)
 {
     int offset = opcode & 0x00FFFFFF;
     if (offset & 0x00800000)
         offset |= 0xFF000000;  // negative offset
-    reg[15].I += offset<<2;
-    armNextPC = reg[15].I;
-    reg[15].I += 4;
+    gba->reg[15].I += offset<<2;
+    gba->armNextPC = gba->reg[15].I;
+    gba->reg[15].I += 4;
     ARM_PREFETCH;
-    clockTicks = codeTicksAccessSeq32(armNextPC) + 1;
-    clockTicks += 2 + codeTicksAccess32(armNextPC)
-                    + codeTicksAccessSeq32(armNextPC);
-    busPrefetchCount = 0;
+    gba->clockTicks = codeTicksAccessSeq32(gba, gba->armNextPC) + 1;
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC)
+                    + codeTicksAccessSeq32(gba, gba->armNextPC);
+    gba->busPrefetchCount = 0;
 }
 
 // BL <offset>
-static INSN_REGPARM void armB00(u32 opcode)
+static INSN_REGPARM void armB00(GBASystem *gba, u32 opcode)
 {
     int offset = opcode & 0x00FFFFFF;
     if (offset & 0x00800000)
         offset |= 0xFF000000;  // negative offset
-    reg[14].I = reg[15].I - 4;
-    reg[15].I += offset<<2;
-    armNextPC = reg[15].I;
-    reg[15].I += 4;
+    gba->reg[14].I = gba->reg[15].I - 4;
+    gba->reg[15].I += offset<<2;
+    gba->armNextPC = gba->reg[15].I;
+    gba->reg[15].I += 4;
     ARM_PREFETCH;
-    clockTicks = codeTicksAccessSeq32(armNextPC) + 1;
-    clockTicks += 2 + codeTicksAccess32(armNextPC)
-                    + codeTicksAccessSeq32(armNextPC);
-    busPrefetchCount = 0;
+    gba->clockTicks = codeTicksAccessSeq32(gba, gba->armNextPC) + 1;
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC)
+                    + codeTicksAccessSeq32(gba, gba->armNextPC);
+    gba->busPrefetchCount = 0;
 }
 
 
-#ifdef GP_SUPPORT
-// MRC
-static INSN_REGPARM void armE01(u32 opcode)
-{
-}
-#else
- #define armE01 armUnknownInsn
-#endif
+#define armE01 armUnknownInsn
 
 
 // SWI <comment>
-static INSN_REGPARM void armF00(u32 opcode)
+static INSN_REGPARM void armF00(GBASystem *gba, u32 opcode)
 {
-    clockTicks = codeTicksAccessSeq32(armNextPC) + 1;
-    clockTicks += 2 + codeTicksAccess32(armNextPC)
-                    + codeTicksAccessSeq32(armNextPC);
-    busPrefetchCount = 0;
-    CPUSoftwareInterrupt(opcode & 0x00FFFFFF);
+    gba->clockTicks = codeTicksAccessSeq32(gba, gba->armNextPC) + 1;
+    gba->clockTicks += 2 + codeTicksAccess32(gba, gba->armNextPC)
+                    + codeTicksAccessSeq32(gba, gba->armNextPC);
+    gba->busPrefetchCount = 0;
+    CPUSoftwareInterrupt(gba, opcode & 0x00FFFFFF);
 }
 
 // Instruction table //////////////////////////////////////////////////////
 
-typedef INSN_REGPARM void (*insnfunc_t)(u32 opcode);
+typedef INSN_REGPARM void (*insnfunc_t)(GBASystem *, u32 opcode);
 #define REP16(insn) \
     insn,insn,insn,insn,insn,insn,insn,insn,\
     insn,insn,insn,insn,insn,insn,insn,insn
@@ -2659,11 +1991,7 @@ typedef INSN_REGPARM void (*insnfunc_t)(u32 opcode);
     REP16(insn),REP16(insn),REP16(insn),REP16(insn),\
     REP16(insn),REP16(insn),REP16(insn),REP16(insn)
 #define arm_UI armUnknownInsn
-#ifdef BKPT_SUPPORT
- #define arm_BP armBreakpoint
-#else
- #define arm_BP armUnknownInsn
-#endif
+#define arm_BP armUnknownInsn
 static insnfunc_t armInsnTable[4096] = {
     arm000,arm001,arm002,arm003,arm004,arm005,arm006,arm007,  // 000
     arm000,arm009,arm002,arm00B,arm004,arm_UI,arm006,arm_UI,  // 008
@@ -2844,50 +2172,24 @@ static insnfunc_t armInsnTable[4096] = {
 
 // Wrapper routine (execution loop) ///////////////////////////////////////
 
-#if 0
-#include<time.h>
-static void tester(void) {
-  static int ran=0;if(ran)return;ran=1;
-  FILE*f=fopen("p:\\timing.txt","w");if(!f)return;
-  for (int op=/*0*/9; op</*0xF00*/10;op++){if(armInsnTable[op]==arm_UI)continue;
-    int i;for(i=0;i<op;i++)if(armInsnTable[op]==armInsnTable[i])break;if(i<op)continue;
-    for(i=0;i<16;i++)reg[i].I=0x3100000;
-    clock_t s=clock();for(i=0;i<10000000;i++)armInsnTable[op](0);clock_t e=clock();
-    fprintf(f,"arm%03X %6ld\n",op,e-s);fflush(f);
-  }fclose(f);
-}
-#endif
-
-int armExecute()
+int armExecute(GBASystem *gba)
 {
     do {
-#ifdef VIOGSF_REMOVED
-		if( cheatsEnabled ) {
-			cpuMasterCodeCheck();
-		}
-#endif
+        if ((gba->armNextPC & 0x0803FFFF) == 0x08020000)
+          gba->busPrefetchCount = 0x100;
 
-        if ((armNextPC & 0x0803FFFF) == 0x08020000)
-          busPrefetchCount = 0x100;
+        u32 opcode = gba->cpuPrefetch[0];
+        gba->cpuPrefetch[0] = gba->cpuPrefetch[1];
 
-        u32 opcode = cpuPrefetch[0];
-        cpuPrefetch[0] = cpuPrefetch[1];
+        gba->busPrefetch = false;
+        if (gba->busPrefetchCount & 0xFFFFFE00)
+            gba->busPrefetchCount = 0x100 | (gba->busPrefetchCount & 0xFF);
 
-        busPrefetch = false;
-        if (busPrefetchCount & 0xFFFFFE00)
-            busPrefetchCount = 0x100 | (busPrefetchCount & 0xFF);
+        gba->clockTicks = 0;
+        int oldArmNextPC = gba->armNextPC;
 
-        clockTicks = 0;
-        int oldArmNextPC = armNextPC;
-
-#ifndef FINAL_VERSION
-        if (armNextPC == stop) {
-            armNextPC++;
-        }
-#endif
-
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
+        gba->armNextPC = gba->reg[15].I;
+        gba->reg[15].I += 4;
         ARM_PREFETCH_NEXT;
 
         int cond = opcode >> 28;
@@ -2895,46 +2197,46 @@ int armExecute()
         if (UNLIKELY(cond != 0x0E)) {  // most opcodes are AL (always)
             switch(cond) {
               case 0x00: // EQ
-                cond_res = Z_FLAG;
+                cond_res = gba->Z_FLAG;
                 break;
               case 0x01: // NE
-                cond_res = !Z_FLAG;
+                cond_res = !gba->Z_FLAG;
                 break;
               case 0x02: // CS
-                cond_res = C_FLAG;
+                cond_res = gba->C_FLAG;
                 break;
               case 0x03: // CC
-                cond_res = !C_FLAG;
+                cond_res = !gba->C_FLAG;
                 break;
               case 0x04: // MI
-                cond_res = N_FLAG;
+                cond_res = gba->N_FLAG;
                 break;
               case 0x05: // PL
-                cond_res = !N_FLAG;
+                cond_res = !gba->N_FLAG;
                 break;
               case 0x06: // VS
-                cond_res = V_FLAG;
+                cond_res = gba->V_FLAG;
                 break;
               case 0x07: // VC
-                cond_res = !V_FLAG;
+                cond_res = !gba->V_FLAG;
                 break;
               case 0x08: // HI
-                cond_res = C_FLAG && !Z_FLAG;
+                cond_res = gba->C_FLAG && !gba->Z_FLAG;
                 break;
               case 0x09: // LS
-                cond_res = !C_FLAG || Z_FLAG;
+                cond_res = !gba->C_FLAG || gba->Z_FLAG;
                 break;
               case 0x0A: // GE
-                cond_res = N_FLAG == V_FLAG;
+                cond_res = gba->N_FLAG == gba->V_FLAG;
                 break;
               case 0x0B: // LT
-                cond_res = N_FLAG != V_FLAG;
+                cond_res = gba->N_FLAG != gba->V_FLAG;
                 break;
               case 0x0C: // GT
-                cond_res = !Z_FLAG &&(N_FLAG == V_FLAG);
+                cond_res = !gba->Z_FLAG &&(gba->N_FLAG == gba->V_FLAG);
                 break;
               case 0x0D: // LE
-                cond_res = Z_FLAG || (N_FLAG != V_FLAG);
+                cond_res = gba->Z_FLAG || (gba->N_FLAG != gba->V_FLAG);
                 break;
               case 0x0E: // AL (impossible, checked above)
                 cond_res = true;
@@ -2948,17 +2250,14 @@ int armExecute()
         }
 
         if (cond_res)
-            (*armInsnTable[((opcode>>16)&0xFF0) | ((opcode>>4)&0x0F)])(opcode);
-#ifdef INSN_COUNTER
-        count(opcode, cond_res);
-#endif
-        if (clockTicks < 0)
+            (*armInsnTable[((opcode>>16)&0xFF0) | ((opcode>>4)&0x0F)])(gba, opcode);
+        if (gba->clockTicks < 0)
             return 0;
-        if (clockTicks == 0)
-            clockTicks = 1 + codeTicksAccessSeq32(oldArmNextPC);
-        cpuTotalTicks += clockTicks;
+        if (gba->clockTicks == 0)
+            gba->clockTicks = 1 + codeTicksAccessSeq32(gba, oldArmNextPC);
+        gba->cpuTotalTicks += gba->clockTicks;
 
-    } while (cpuTotalTicks<cpuNextEvent && armState && !holdState && !SWITicks);
+    } while (gba->cpuTotalTicks<gba->cpuNextEvent && gba->armState && !gba->holdState && !gba->SWITicks);
 
     return 1;
 }

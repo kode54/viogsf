@@ -7,6 +7,8 @@
 #include "blargg_common.h"
 #include "Blip_Buffer.h"
 
+namespace GBA {
+
 // Interface to one or more Blip_Buffers mapped to one or more channels
 // consisting of left, center, and right buffers.
 class Multi_Buffer {
@@ -200,6 +202,8 @@ inline blargg_err_t Multi_Buffer::set_channel_count( int n, int const* types )
 	channel_count_ = n;
 	channel_types_ = types;
 	return 0;
+}
+
 }
 
 #endif

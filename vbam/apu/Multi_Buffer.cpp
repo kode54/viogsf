@@ -15,6 +15,8 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
 #include "blargg_source.h"
 
+namespace GBA {
+
 #ifdef BLARGG_ENABLE_OPTIMIZER
 	#include BLARGG_ENABLE_OPTIMIZER
 #endif
@@ -278,4 +280,6 @@ void Stereo_Mixer::mix_stereo( blip_sample_t* out_, int count )
 		BLIP_READER_END( center, *bufs [2] );
 		break;
 	}
+}
+
 }

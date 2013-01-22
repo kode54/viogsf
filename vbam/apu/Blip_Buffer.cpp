@@ -25,6 +25,8 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 	#include BLARGG_ENABLE_OPTIMIZER
 #endif
 
+namespace GBA {
+
 int const silent_buf_size = 1; // size used for Silent_Blip_Buffer
 
 Blip_Buffer::Blip_Buffer()
@@ -462,4 +464,6 @@ void Blip_Buffer::load_state( blip_buffer_state_t const& in )
 	offset_       = in.offset_;
 	reader_accum_ = in.reader_accum_;
 	memcpy( buffer_, in.buf, sizeof in.buf );
+}
+
 }

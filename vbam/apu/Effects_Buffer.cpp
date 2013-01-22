@@ -17,6 +17,8 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
 #include "blargg_source.h"
 
+namespace GBA {
+
 int const fixed_shift = 12;
 #define TO_FIXED( f )   fixed_t ((f) * ((fixed_t) 1 << fixed_shift))
 #define FROM_FIXED( f ) ((f) >> fixed_shift)
@@ -639,4 +641,6 @@ void Effects_Buffer::mix_effects( blip_sample_t* out_, int pair_count )
 		}
 		while ( remain );
 	}
+}
+
 }

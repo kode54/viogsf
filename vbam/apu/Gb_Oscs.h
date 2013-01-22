@@ -15,6 +15,8 @@
 	#error "GB_APU_OVERCLOCK must be a power of 2"
 #endif
 
+namespace GBA {
+
 class Gb_Osc {
 protected:
 
@@ -185,6 +187,8 @@ inline void Gb_Wave::write( unsigned addr, int data )
 	int index = access( addr );
 	if ( index >= 0 )
 		wave_bank() [index] = data;;
+}
+
 }
 
 #endif
