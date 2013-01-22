@@ -305,14 +305,13 @@ void flush_samples(GBASystem *gba, GBA::Multi_Buffer * buffer)
 	// number of samples in output buffer
     int const out_buf_size = soundBufferLen / sizeof *gba->soundFinalWave;
 
-	// Keep filling and writing soundFinalWave until it can't be fully filled
-	while ( buffer->samples_avail() >= out_buf_size )
+    while ( buffer->samples_avail() )
 	{
-        buffer->read_samples( (GBA::blip_sample_t*) gba->soundFinalWave, out_buf_size );
+        long samples_read = buffer->read_samples( (GBA::blip_sample_t*) gba->soundFinalWave, out_buf_size );
         if(gba->soundPaused)
             soundResume(gba);
 
-        gba->output->write(gba->soundFinalWave, soundBufferLen);
+        gba->output->write(gba->soundFinalWave, samples_read * sizeof *gba->soundFinalWave);
 	}
 }
 
