@@ -10,8 +10,6 @@ TARGET = viogsf
 TEMPLATE = lib
 CONFIG += staticlib
 
-DEFINES += C_CORE
-
 SOURCES += \
     vbam/apu/Multi_Buffer.cpp \
     vbam/apu/Gb_Oscs.cpp \
