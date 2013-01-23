@@ -1,0 +1,114 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Source Files\apu">
+      <UniqueIdentifier>{bf42d638-bb47-42d4-bec6-123741f6d46f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\apu">
+      <UniqueIdentifier>{35fb755a-f7e8-4a70-814b-26c6d52c77ec}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\common">
+      <UniqueIdentifier>{9bf323ec-d7e6-454c-915e-759069595b8d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\gba">
+      <UniqueIdentifier>{02f65112-7ae8-4db3-ab6c-c696e2152e27}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\gba">
+      <UniqueIdentifier>{657eb3dc-4d72-450b-aca3-d47ee9318de8}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="vbam\gpl.txt" />
+    <None Include="vbam\License.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="vbam\apu\Blip_Buffer.cpp">
+      <Filter>Source Files\apu</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\apu\Effects_Buffer.cpp">
+      <Filter>Source Files\apu</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\apu\Gb_Apu.cpp">
+      <Filter>Source Files\apu</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\apu\Gb_Oscs.cpp">
+      <Filter>Source Files\apu</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\apu\Multi_Buffer.cpp">
+      <Filter>Source Files\apu</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\gba\bios.cpp">
+      <Filter>Source Files\gba</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\gba\GBA.cpp">
+      <Filter>Source Files\gba</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\gba\GBA-arm.cpp">
+      <Filter>Source Files\gba</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\gba\GBA-thumb.cpp">
+      <Filter>Source Files\gba</Filter>
+    </ClCompile>
+    <ClCompile Include="vbam\gba\Sound.cpp">
+      <Filter>Source Files\gba</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="vbam\apu\blargg_common.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\blargg_config.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\blargg_source.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\Blip_Buffer.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\Effects_Buffer.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\Gb_Apu.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\Gb_Oscs.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\apu\Multi_Buffer.h">
+      <Filter>Header Files\apu</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\common\Port.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\common\Types.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\gba\bios.h">
+      <Filter>Header Files\gba</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\gba\GBA.h">
+      <Filter>Header Files\gba</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\gba\GBAcpu.h">
+      <Filter>Header Files\gba</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\gba\GBAinline.h">
+      <Filter>Header Files\gba</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\gba\Globals.h">
+      <Filter>Header Files\gba</Filter>
+    </ClInclude>
+    <ClInclude Include="vbam\gba\Sound.h">
+      <Filter>Header Files\gba</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
