@@ -1,12 +1,12 @@
 // Blip_Buffer 0.4.1. http://www.slack.net/~ant/
 
-#include "Blip_Buffer.h"
-
 #include <assert.h>
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+
+#include "Blip_Buffer.h"
 
 /* Copyright (C) 2003-2007 Shay Green. This module is free software; you
 can redistribute it and/or modify it under the terms of the GNU Lesser
