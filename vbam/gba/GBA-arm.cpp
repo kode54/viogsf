@@ -106,7 +106,7 @@ static INSN_REGPARM void armUnknownInsn(GBASystem *gba, u32 opcode)
  #define VALUE_LSL_REG_C \
     unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     unsigned int rm = gba->reg[opcode & 0x0F].I;        \
-    if(opcode & 0x0F == 15) {                           \
+    if((opcode & 0x0F) == 15) {                         \
         rm += 4;                                        \
     }                                                   \
     if (LIKELY(shift)) {                                \
@@ -142,7 +142,7 @@ static INSN_REGPARM void armUnknownInsn(GBASystem *gba, u32 opcode)
  #define VALUE_LSR_REG_C \
     unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     unsigned int rm = gba->reg[opcode & 0x0F].I;        \
-    if(opcode & 0x0F == 15) {                           \
+    if((opcode & 0x0F) == 15) {                         \
         rm += 4;                                        \
     }                                                   \
     if (LIKELY(shift)) {                                \
@@ -184,7 +184,7 @@ static INSN_REGPARM void armUnknownInsn(GBASystem *gba, u32 opcode)
  #define VALUE_ASR_REG_C \
     unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     s32 rm = gba->reg[opcode & 0x0F].I;                 \
-    if(opcode & 0x0F == 15) {                           \
+    if((opcode & 0x0F) == 15) {                         \
         rm += 4;                                        \
     }                                                   \
     if (LIKELY(shift < 32)) {                           \
@@ -225,7 +225,7 @@ static INSN_REGPARM void armUnknownInsn(GBASystem *gba, u32 opcode)
  #define VALUE_ROR_REG_C \
     unsigned int shift = gba->reg[(opcode >> 8)&15].B.B0;    \
     unsigned int rm = gba->reg[opcode & 0x0F].I;        \
-    if(opcode & 0x0F == 15) {                           \
+    if((opcode & 0x0F) == 15) {                         \
         rm += 4;                                        \
     }                                                   \
     if (LIKELY(shift & 0x1F)) {                         \
