@@ -428,7 +428,7 @@ static void remake_stereo_buffer(GBASystem *gba)
 void soundShutdown(GBASystem *gba)
 {
 	// APU
-    if ( !gba->gb_apu )
+    if (gba->gb_apu)
 	{
         delete gba->gb_apu;
         gba->gb_apu = 0;
