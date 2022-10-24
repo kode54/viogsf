@@ -306,8 +306,17 @@ void flush_samples(GBASystem *gba, GBA::Multi_Buffer * buffer)
 	// soundBufferLen should have a whole number of sample pairs
     assert( soundBufferLen % (2 * sizeof *gba->soundFinalWave) == 0 );
 
-	// number of samples in output buffer
-    blip_long const out_buf_size = soundBufferLen / sizeof *gba->soundFinalWave;
+	// number of samples in sound buffer
+    blip_long const snd_buf_size = soundBufferLen / sizeof *gba->soundFinalWave;
+
+        // maximum size of the output buffer
+    blip_long out_buf_size = sizeof gba->soundFinalWave / sizeof *gba->soundFinalWave;
+
+        // only read as many samples as the buffer allows, otherwise we
+        // get a segfault at high sample rates
+    if (out_buf_size > snd_buf_size) {
+      out_buf_size = snd_buf_size;
+    }
 
     while ( buffer->samples_avail() )
 	{
